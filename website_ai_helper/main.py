@@ -9,7 +9,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 
 from website_ai_helper import config, qa, structured, vectorstore
 from website_ai_helper.agent import run_chat
@@ -58,6 +58,34 @@ def widget_js() -> FileResponse:
         WIDGET_JS, media_type="application/javascript",
         headers={"Cache-Control": "public, max-age=300"},
     )
+
+
+@app.get("/widget.css")
+def widget_css(request: Request) -> PlainTextResponse:
+    # Per-collection CSS override, e.g. <script src=".../widget.js?client_id=X">
+    # pairs with a GET .../widget.css?client_id=X the widget links to right
+    # after its own base styles — full arbitrary CSS, not limited to the
+    # accent/position widget.js params. A collection with no override file
+    # just gets an empty (but valid, cacheable) stylesheet: zero behavior
+    # change from before this endpoint existed.
+    collection = (request.query_params.get("client_id") or "").strip() or None
+    path = config.widget_style_path(collection)
+    css = path.read_text(encoding="utf-8") if path else ""
+    return PlainTextResponse(
+        css, media_type="text/css",
+        headers={"Cache-Control": "public, max-age=60"},
+    )
+
+
+@app.get("/widget-strings.json")
+def widget_strings(request: Request) -> JSONResponse:
+    # Per-collection UI text override (title/subtitle/placeholder/send/
+    # unreachable — any subset), merged client-side over the language
+    # defaults in widget.js. A collection with no override file just gets
+    # {}, i.e. no change from plain language-based defaults.
+    collection = (request.query_params.get("client_id") or "").strip() or None
+    overrides = config.widget_strings_for(collection)
+    return JSONResponse(overrides, headers={"Cache-Control": "public, max-age=60"})
 
 
 @app.post("/chat")

@@ -311,6 +311,9 @@ All via `.env` or CLI flags (see `.env.example`). Common knobs:
 | `TOP_K`, `CHUNK_SIZE` | Retrieval tuning |
 | `FREQUENCY_PENALTY`, `PRESENCE_PENALTY`, `MAX_TOKENS` | Anti-repetition / runaway-generation guards |
 | `SITE_NAMES` | Per-collection site names for multi-tenant serving (`acme=Acme Shop,adr=Adrlandia`) |
+| `SITE_STYLES` | Per-collection answer tone/style, appended to the system prompt (`acme=Tono diretto.\|adr=Tono cordiale.` — `\|`-separated, see "Embedding the widget") |
+| `WIDGET_STYLES_DIR` | Folder of per-collection widget CSS overrides, `<collection>.css` (default `widget_styles`) |
+| `WIDGET_STRINGS_DIR` | Folder of per-collection widget UI text overrides, `<collection>.json` (default `widget_strings`) |
 | `CRAWL_MAX_PAGES`, `CRAWL_SAME_DOMAIN` | Crawl scope |
 | `CRAWL_PDFS`, `CRAWL_PDF_MAX_MB` | Ingest linked PDF files (default on, 20 MB cap) |
 | `CRAWL_RENDER`, `CRAWL_RENDER_WAIT_MS` | Render JS with a headless browser (`--render`) and settle time |
@@ -608,8 +611,9 @@ one snippet handles every client site:
 
 ```html
 <script>
-!function(d,u,i,l){
-    var s=d.createElement("script");s.async=1;s.src=u+"?client_id="+i+"&language="+l;
+!function(d,u,i,l,p,a){
+    var s=d.createElement("script");s.async=1;
+    s.src=u+"?client_id="+i+"&language="+l+(p?"&position="+p:"")+(a?"&accent="+encodeURIComponent(a):"");
     var h=d.getElementsByTagName("script")[0];h.parentNode.insertBefore(s,h);
 }(document,"https://your-backend/widget.js","acme","en");
 </script>
@@ -630,6 +634,51 @@ one snippet handles every client site:
 - The script reads both params from its own `<script src>` at load time via
   `document.currentScript`, builds the whole widget via DOM APIs, and POSTs
   `client_id` on every `/chat` call — nothing else to configure per site.
+- **Per-site visual branding** — two more, OPTIONAL, positional arguments on
+  the same function call above (`p` then `a`), so one shared `widget.js` file
+  serves every client with a different look — no per-site copies to maintain:
+  - `p` (position): `"left"` or `"right"` (default `"right"`) — which bottom
+    corner the toggle button and panel open from.
+  - `a` (accent): a hex color for the header/buttons/user bubbles, e.g.
+    `"#f17023"` — the wrapper URL-encodes it for you (`encodeURIComponent`),
+    no manual `%23` needed. Malformed values fall back to the default blue.
+  ```html
+  }(document,"https://your-backend/widget.js","acme","en","left","#f17023");
+  ```
+  Omit either (or both) to keep the default — e.g. `(document,"https://your-backend/widget.js","acme","en","left")`
+  sets only the position. **Don't pass them as extra bare arguments after the
+  closing `)` of an older 4-argument snippet** (`...,"en"), position="left")`)
+  — that does nothing (an unused 5th argument) and creates a stray global
+  variable besides; the wrapper function itself must have the `p,a` parameters
+  shown above, or an old copy of the snippet won't know what to do with them.
+- **Full per-site visual customization**: for anything beyond `accent`/
+  `position` (fonts, spacing, animations, a logo, dark mode — literally any
+  CSS), drop a file at `widget_styles/<client_id>.css` on the backend. It's
+  served at `GET /widget.css?client_id=...` and linked by `widget.js`
+  automatically right after its own base styles, so your rules win the
+  cascade without `!important`. A collection with no file here just gets the
+  default look — see `widget_styles/README.md` for the available CSS hooks
+  (`#wah-toggle`, `#wah-panel`, `.wah-msg.user`/`.wah-msg.bot`, etc.) and the
+  `--wah-*` custom properties you can reassign instead of rewriting whole
+  rules. `WIDGET_STYLES_DIR` in `.env` changes the folder (default
+  `widget_styles`).
+- **Full per-site UI text**: same idea for the widget's title/subtitle/
+  placeholder/send-button label/unreachable-error message — drop
+  `widget_strings/<client_id>.json` with any subset of those keys (e.g. just
+  `{"title": "Ricambi Ribi"}`); it's fetched at `GET
+  /widget-strings.json?client_id=...` and merged over the `language` default
+  strings client-side, so an omitted key just keeps its language default.
+  `WIDGET_STRINGS_DIR` in `.env` changes the folder (default
+  `widget_strings`). Both this and the CSS file are independent — use
+  either, both, or neither per site.
+- **Per-site answer tone**, server-side (not a widget param): set `SITE_STYLES`
+  in `.env` to append a style/tone instruction to the system prompt for a
+  given collection, e.g.
+  `SITE_STYLES=acme=Tono diretto e professionale, senza emoji.|adr=Tono cordiale, puoi usare qualche emoji.`
+  Entries are separated by `|` (not `,`) since a tone instruction is free text
+  and commonly contains commas itself. It's appended after the base system
+  prompt and can't override the source-precedence/safety rules above it.
+  Collections without an entry get the default tone only.
 
 The widget sends the visitor's current URL, title, and page text as context —
 this works unmodified on any page it's embedded in, including a WordPress site.
@@ -682,8 +731,12 @@ QA_TOKEN=some-long-random-string
 
 then open the **private QA site**:
 
-- `/qa?token=<QA_TOKEN>` — all conversations: start time, site, message
-  count, duration, first message, error flags
+- `/qa?token=<QA_TOKEN>` — all conversations across every site: start time,
+  site, message count, duration, first message, error flags; a "Sites:" nav
+  strip links to each collection's own page
+- `/qa/<collection>?token=<QA_TOKEN>` — same list, filtered to one site, e.g.
+  `/qa/alemo` (a collection with no chats yet shows "No conversations yet"
+  rather than an error)
 - click **view** for the human-readable transcript (`Client:` / `Agent:`
   with per-reply latency), or **txt** to download it as plain text
 

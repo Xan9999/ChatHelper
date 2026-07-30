@@ -1,8 +1,9 @@
 /* Website AI Helper — self-injecting chat widget.
  * Loaded via a single async <script> tag (see README "Embedding the widget"):
  *   <script>
- *   !function(d,u,i,l){
- *       var s=d.createElement("script");s.async=1;s.src=u+"?client_id="+i+"&language="+l;
+ *   !function(d,u,i,l,p,a){
+ *       var s=d.createElement("script");s.async=1;
+ *       s.src=u+"?client_id="+i+"&language="+l+(p?"&position="+p:"")+(a?"&accent="+encodeURIComponent(a):"");
  *       var h=d.getElementsByTagName("script")[0];h.parentNode.insertBefore(s,h);
  *   }(document,"https://your-backend/widget.js","your-client-id","en");
  *   </script>
@@ -10,6 +11,28 @@
  * collection name from `website-ai-helper ingest --collection <client_id>`).
  * language only picks the widget's UI strings below — the assistant itself
  * already answers in whatever language the visitor types in.
+ *
+ * Optional visual params — pass as the 5th (position) and/or 6th (accent)
+ * argument to the wrapper function above, e.g.:
+ *   }(document,"https://your-backend/widget.js","your-client-id","en","left","#f17023");
+ * so one shared widget.js file can look different per site without
+ * maintaining multiple copies. They end up as query params on THIS script's
+ * own src (read below via document.currentScript), which is what actually
+ * matters if you ever build the src by some other means than the wrapper:
+ *   accent   — hex color for the header/buttons/user bubbles, e.g. &accent=%23f17023
+ *              for #f17023 (the wrapper above URL-encodes it for you). Falls
+ *              back to the default blue if missing or malformed.
+ *   position — "left" or "right" (default "right"): which bottom corner the
+ *              toggle button and panel open from.
+ *
+ * For anything beyond a color and a corner (fonts, spacing, animations, a
+ * logo, dark mode...), drop a full CSS file at
+ * <WIDGET_STYLES_DIR>/<client_id>.css on the backend — it's served at
+ * GET /widget.css?client_id=... and linked here automatically, no widget.js
+ * changes needed. Same idea for the UI TEXT (title/subtitle/placeholder/
+ * send/unreachable message): drop <WIDGET_STRINGS_DIR>/<client_id>.json
+ * (any subset of those keys) — served at GET /widget-strings.json?client_id=...
+ * and merged over the language defaults below. See README "Embedding the widget".
  */
 (function () {
   "use strict";
@@ -20,6 +43,9 @@
   var BACKEND = scriptUrl.origin;
   var CLIENT_ID = scriptUrl.searchParams.get("client_id") || "";
   var LANG = (scriptUrl.searchParams.get("language") || "en").toLowerCase();
+  var ACCENT = scriptUrl.searchParams.get("accent") || "";
+  if (ACCENT && !/^#[0-9a-fA-F]{3,8}$/.test(ACCENT)) ACCENT = ""; // malformed -> keep default
+  var SIDE = (scriptUrl.searchParams.get("position") || "right").toLowerCase() === "left" ? "left" : "right";
 
   var STRINGS = {
     en: { title: "Assistant", subtitle: "Ask about this site", placeholder: "Type your question...",
@@ -29,14 +55,17 @@
     sl: { title: "Pomočnik", subtitle: "Vprašaj o tej spletni strani", placeholder: "Vnesite vprašanje...",
           send: "Pošlji", unreachable: "Pomočnika ni mogoče doseči. Ali strežnik deluje?" },
   };
-  var t = STRINGS[LANG] || STRINGS.en;
+  // Copy (not reference) STRINGS[LANG] — a per-collection override merges
+  // INTO this object later, and must not mutate the shared language defaults.
+  var t = Object.assign({}, STRINGS[LANG] || STRINGS.en);
 
   var css = ""
     + ":root{--wah-accent:#3b5bdb;--wah-bg:#fff;--wah-fg:#1a1a2e;--wah-muted:#6b7280;--wah-panel:#f7f8fa;}"
-    + "#wah-toggle{position:fixed;bottom:24px;right:24px;width:60px;height:60px;border-radius:50%;"
+    + (ACCENT ? ":root{--wah-accent:" + ACCENT + ";}" : "")
+    + "#wah-toggle{position:fixed;bottom:24px;" + SIDE + ":24px;width:60px;height:60px;border-radius:50%;"
     + "background:var(--wah-accent);color:#fff;border:none;font-size:26px;cursor:pointer;"
     + "box-shadow:0 6px 20px rgba(0,0,0,.25);z-index:999999;font-family:system-ui,sans-serif;}"
-    + "#wah-panel{position:fixed;bottom:96px;right:24px;width:380px;max-width:calc(100vw - 32px);"
+    + "#wah-panel{position:fixed;bottom:96px;" + SIDE + ":24px;width:380px;max-width:calc(100vw - 32px);"
     + "height:560px;max-height:calc(100vh - 120px);background:var(--wah-bg);border-radius:16px;"
     + "box-shadow:0 12px 40px rgba(0,0,0,.28);display:none;flex-direction:column;overflow:hidden;"
     + "z-index:999999;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:var(--wah-fg);}"
@@ -63,6 +92,16 @@
   styleEl.textContent = css;
   document.head.appendChild(styleEl);
 
+  // Optional per-collection CSS override (full, arbitrary CSS — fonts,
+  // spacing, dark mode, anything) — a plain <link>, loaded AFTER the base
+  // <style> above so its rules win the cascade on equal specificity. A
+  // collection with no override file gets back an empty (but valid)
+  // stylesheet from the backend, so this is a safe no-op by default.
+  var linkEl = document.createElement("link");
+  linkEl.rel = "stylesheet";
+  linkEl.href = BACKEND + "/widget.css?client_id=" + encodeURIComponent(CLIENT_ID);
+  document.head.appendChild(linkEl);
+
   var toggle = document.createElement("button");
   toggle.id = "wah-toggle";
   toggle.title = "Chat";
@@ -87,6 +126,26 @@
     input: panel.querySelector("input"),
     send: panel.querySelector("button"),
   };
+  // Optional per-collection text override (title/subtitle/placeholder/send/
+  // unreachable) — fetched async so it never delays the widget's first
+  // paint; applies moments later if a collection has an override file, same
+  // timing model as the CSS <link> above. Uses textContent/nodeValue (never
+  // innerHTML) to apply it, even though the source is operator-trusted.
+  fetch(BACKEND + "/widget-strings.json?client_id=" + encodeURIComponent(CLIENT_ID))
+    .then(function (r) { return r.json(); })
+    .then(function (overrides) {
+      if (!overrides || typeof overrides !== "object") return;
+      Object.assign(t, overrides);
+      var hdr = panel.querySelector(".wah-hdr");
+      if (overrides.title) hdr.childNodes[0].nodeValue = t.title;
+      if (overrides.subtitle) hdr.querySelector("small").textContent = t.subtitle;
+      if (overrides.placeholder) els.input.placeholder = t.placeholder;
+      if (overrides.send) els.send.textContent = t.send;
+      // t.unreachable needs no DOM patch — read live from `t` in the
+      // .catch() handler further down, whenever it's actually needed.
+    })
+    .catch(function () {}); // no override file / network hiccup -> keep defaults
+
   var history = [];
   var conversationId = (crypto.randomUUID && crypto.randomUUID())
     || (Date.now().toString(36) + Math.random().toString(36).slice(2));

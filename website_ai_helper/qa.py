@@ -8,11 +8,12 @@ between its first and last message; the widget groups turns with a random
 conversation id it generates per chat session.
 
 Review site (private): set QA_TOKEN in .env, then open
-    /qa?token=<QA_TOKEN>
-for the conversation list, click through for the human-readable transcript
-(Client: ... / Agent: ...), or download it as plain text. With QA_TOKEN
-empty the /qa routes are disabled (secure by default) — logging itself
-still happens.
+    /qa?token=<QA_TOKEN>                    all conversations, every site
+    /qa/<collection>?token=<QA_TOKEN>       one site only, e.g. /qa/alemo
+    /qa/<conversation-id>?token=<QA_TOKEN>  a single transcript
+for the human-readable transcript (Client: ... / Agent: ...), or download it
+as plain text. With QA_TOKEN empty the /qa routes are disabled (secure by
+default) — logging itself still happens.
 """
 from __future__ import annotations
 
@@ -130,10 +131,12 @@ def _fmt_duration(seconds: float) -> str:
     return f"{seconds // 3600}h {(seconds % 3600) // 60}m"
 
 
-def _conversation_rows() -> list[sqlite3.Row]:
+def _conversation_rows(collection: str | None = None) -> list[sqlite3.Row]:
     con = _conn()
+    where = "WHERE c.collection = ?" if collection is not None else ""
+    params = (collection,) if collection is not None else ()
     rows = con.execute(
-        """SELECT c.id, c.collection, c.site_name, c.page_url, c.started_at,
+        f"""SELECT c.id, c.collection, c.site_name, c.page_url, c.started_at,
                   COUNT(m.id)                          AS n_messages,
                   MIN(m.created_at)                    AS first_at,
                   MAX(m.created_at)                    AS last_at,
@@ -143,11 +146,22 @@ def _conversation_rows() -> list[sqlite3.Row]:
                   SUM(CASE WHEN m.error IS NOT NULL THEN 1 ELSE 0 END) AS n_errors
              FROM conversations c
              JOIN messages m ON m.conversation_id = c.id
+             {where}
             GROUP BY c.id
-            ORDER BY last_at DESC"""
+            ORDER BY last_at DESC""",
+        params,
     ).fetchall()
     con.close()
     return rows
+
+
+def _distinct_collections() -> list[str]:
+    con = _conn()
+    rows = con.execute(
+        "SELECT DISTINCT collection FROM conversations ORDER BY collection"
+    ).fetchall()
+    con.close()
+    return [r["collection"] for r in rows if r["collection"]]
 
 
 def _duration_of(row: sqlite3.Row) -> float:
@@ -176,27 +190,68 @@ th { background: #f7f8fa; } tr:hover td { background: #fafbff; }
 """
 
 
-@router.get("/qa", response_class=HTMLResponse)
-def qa_list(request: Request) -> HTMLResponse:
-    token = _require_token(request)
-    rows = _conversation_rows()
-    body = [f"<style>{_PAGE_CSS}</style><h1>Conversations ({len(rows)})</h1>",
-            "<p class='meta'>All times UTC. Duration = first to last message.</p>",
-            "<table><tr><th>Started</th><th>Site / collection</th><th>Msgs</th>"
-            "<th>Duration</th><th>First message</th><th></th></tr>"]
+def _sites_nav(token: str, current: str | None = None) -> str:
+    """'Sites:' link strip to jump between per-collection QA pages."""
+    collections = _distinct_collections()
+    if not collections:
+        return ""
+    links = []
+    for c in collections:
+        label = html.escape(config.site_name_for(c))
+        if c == current:
+            links.append(f"<strong>{label}</strong>")
+        else:
+            links.append(f"<a href='/qa/{c}?token={token}'>{label}</a>")
+    return f"<p class='meta'>Sites: {' · '.join(links)}</p>"
+
+
+def _rows_table_html(rows: list[sqlite3.Row], token: str, show_collection: bool) -> str:
+    if not rows:
+        return "<p class='meta'>No conversations yet.</p>"
+    cols = "<th>Site / collection</th>" if show_collection else ""
+    parts = [f"<table><tr><th>Started</th>{cols}<th>Msgs</th>"
+             "<th>Duration</th><th>First message</th><th></th></tr>"]
     for r in rows:
         err = " <span class='err'>⚠ errors</span>" if r["n_errors"] else ""
         preview = html.escape((r["first_message"] or "")[:90])
-        body.append(
-            f"<tr><td>{html.escape(r['started_at'] or '')}</td>"
-            f"<td>{html.escape(r['site_name'] or '')} / {html.escape(r['collection'] or '')}</td>"
+        site_col = (f"<td>{html.escape(r['site_name'] or '')} / "
+                    f"{html.escape(r['collection'] or '')}</td>") if show_collection else ""
+        parts.append(
+            f"<tr><td>{html.escape(r['started_at'] or '')}</td>{site_col}"
             f"<td>{r['n_messages']}</td>"
             f"<td>{_fmt_duration(_duration_of(r))}{err}</td>"
             f"<td>{preview}</td>"
             f"<td><a href='/qa/{r['id']}?token={token}'>view</a> · "
             f"<a href='/qa/{r['id']}/transcript.txt?token={token}'>txt</a></td></tr>"
         )
-    body.append("</table>")
+    parts.append("</table>")
+    return "".join(parts)
+
+
+@router.get("/qa", response_class=HTMLResponse)
+def qa_list(request: Request) -> HTMLResponse:
+    token = _require_token(request)
+    rows = _conversation_rows()
+    body = [
+        f"<style>{_PAGE_CSS}</style><h1>Conversations ({len(rows)})</h1>",
+        "<p class='meta'>All times UTC. Duration = first to last message.</p>",
+        _sites_nav(token),
+        _rows_table_html(rows, token, show_collection=True),
+    ]
+    return HTMLResponse("".join(body))
+
+
+def _collection_page(collection: str, token: str) -> HTMLResponse:
+    rows = _conversation_rows(collection=collection)
+    site = html.escape(config.site_name_for(collection))
+    body = [
+        f"<style>{_PAGE_CSS}</style>",
+        f"<p><a href='/qa?token={token}'>&larr; all conversations</a></p>",
+        f"<h1>{site} — {html.escape(collection)} ({len(rows)})</h1>",
+        "<p class='meta'>All times UTC. Duration = first to last message.</p>",
+        _sites_nav(token, current=collection),
+        _rows_table_html(rows, token, show_collection=False),
+    ]
     return HTMLResponse("".join(body))
 
 
@@ -212,10 +267,20 @@ def _load_conversation(cid: str) -> tuple[sqlite3.Row, list[sqlite3.Row]]:
     return conv, msgs
 
 
-@router.get("/qa/{cid}", response_class=HTMLResponse)
-def qa_detail(cid: str, request: Request) -> HTMLResponse:
+@router.get("/qa/{key}", response_class=HTMLResponse)
+def qa_detail_or_collection(key: str, request: Request) -> HTMLResponse:
+    """`key` is either a conversation id (-> single transcript) or a
+    collection name (-> that site's conversation list, e.g. /qa/alemo).
+    Conversation ids are checked first; any other value is treated as a
+    collection filter (an unknown/empty one just renders "no conversations
+    yet" rather than a 404, since a collection that exists in Qdrant but has
+    no chats yet is a perfectly normal state)."""
     token = _require_token(request)
-    conv, msgs = _load_conversation(cid)
+    try:
+        conv, msgs = _load_conversation(key)
+    except HTTPException:
+        return _collection_page(key, token)
+    cid = key
     dur = 0.0
     if len(msgs) >= 2:
         dur = (datetime.fromisoformat(msgs[-1]["created_at"])

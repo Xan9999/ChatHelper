@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -104,6 +105,76 @@ for _pair in _get("SITE_NAMES", "").split(","):
 def site_name_for(collection: str | None) -> str:
     """Site name for a request's collection (None = the default collection)."""
     return _SITE_NAMES.get(collection or QDRANT_COLLECTION, SITE_NAME)
+
+
+# Per-collection answer STYLE/tone guidance, appended to the system prompt,
+# e.g.:
+#   SITE_STYLES=acme=Rispondi in tono diretto e professionale, senza emoji.|adr=Tono cordiale e informale, puoi usare qualche emoji.
+# Entries are separated by "|" (not ",") because a style instruction is free
+# text and commonly contains commas itself, unlike the short SITE_NAMES
+# values above. Collections without an entry get no extra guidance — the
+# base SYSTEM_PROMPT alone still applies.
+_SITE_STYLES: dict[str, str] = {}
+for _pair in _get("SITE_STYLES", "").split("|"):
+    if "=" in _pair:
+        _k, _v = _pair.split("=", 1)
+        if _k.strip() and _v.strip():
+            _SITE_STYLES[_k.strip()] = _v.strip()
+
+
+def site_style_for(collection: str | None) -> str:
+    """Extra answer-style/tone instruction for a request's collection, or ''
+    if none is configured."""
+    return _SITE_STYLES.get(collection or QDRANT_COLLECTION, "")
+
+
+# Directory of per-collection widget CSS overrides (full, arbitrary CSS —
+# fonts, spacing, animations, dark mode, anything — not limited to the
+# accent/position widget.js params). Served at GET /widget.css?client_id=...
+# One file per collection: <WIDGET_STYLES_DIR>/<collection>.css. A collection
+# with no file just gets no extra rules — the base widget look is unchanged.
+WIDGET_STYLES_DIR = Path(_get("WIDGET_STYLES_DIR", "widget_styles")).resolve()
+_COLLECTION_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def widget_style_path(collection: str | None) -> Path | None:
+    """Path to a collection's CSS override file, or None if the name is
+    invalid/unsafe or no such file exists. Validates against a strict
+    allowlist BEFORE touching the filesystem — collection comes from a
+    client-supplied query param, so this also guards against path traversal
+    (e.g. '../../etc/passwd') rather than relying on Path resolution alone."""
+    name = collection or QDRANT_COLLECTION
+    if not _COLLECTION_NAME_RE.match(name):
+        return None
+    path = WIDGET_STYLES_DIR / f"{name}.css"
+    return path if path.is_file() else None
+
+
+# Directory of per-collection widget UI TEXT overrides (title, subtitle,
+# placeholder, send-button label, unreachable-error message — any subset).
+# Served at GET /widget-strings.json?client_id=... and merged client-side
+# over the language-based defaults in widget.js. One file per collection:
+# <WIDGET_STRINGS_DIR>/<collection>.json. A collection with no file just
+# keeps the plain language defaults — nothing to configure for sites that
+# don't need custom wording.
+WIDGET_STRINGS_DIR = Path(_get("WIDGET_STRINGS_DIR", "widget_strings")).resolve()
+
+
+def widget_strings_for(collection: str | None) -> dict:
+    """Text-override dict for a collection (any subset of title/subtitle/
+    placeholder/send/unreachable), or {} if none configured / the file is
+    missing / invalid JSON. Same filename-safety allowlist as widget_style_path."""
+    name = collection or QDRANT_COLLECTION
+    if not _COLLECTION_NAME_RE.match(name):
+        return {}
+    path = WIDGET_STRINGS_DIR / f"{name}.json"
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
 
 # --- CORS ---
 # Comma-separated list of origins allowed to call /chat from a browser, e.g.

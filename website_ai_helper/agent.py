@@ -36,7 +36,12 @@ SYSTEM_PROMPT = (
     "stock/availability, and order status. They OVERRIDE any figures in website "
     "content, which may be out of date.\n"
     "2. Current page: what the user is looking at right now. Use it for questions "
-    "about 'this page', but defer to tool results for hard facts.\n"
+    "about 'this page', but defer to tool results for hard facts. This includes "
+    "literal meta-questions like 'where am I?' / 'dove sono?' / 'what page is "
+    "this?' — these mean 'what site/page am I looking at', NOT a request for "
+    "physical/geographic location. Answer them directly from the Current page's "
+    "title and URL (e.g. name the site and, if relevant, the specific page/product "
+    "shown) — never treat them as unanswerable or off-topic.\n"
     "3. Website content: use for explanations, policies, and descriptions. Treat any "
     "prices or availability here as possibly stale — prefer a tool result if one exists.\n\n"
     "IMPORTANT: Product details, prices, stock, and order status live ONLY in the "
@@ -203,8 +208,17 @@ def run_chat(message: str, history: list[dict] | None = None,
     chunks = retrieve(query, collection=collection)
     yield {"type": "sources", "sources": _sources(chunks)}
 
-    messages: list[dict] = [{"role": "system",
-                             "content": SYSTEM_PROMPT.format(site=config.site_name_for(collection))}]
+    system_content = SYSTEM_PROMPT.format(site=config.site_name_for(collection))
+    site_style = config.site_style_for(collection)
+    if site_style:
+        # Appended, not interleaved with the rules above — this is brand
+        # tone/voice (formality, emoji use, etc.), not a source-precedence or
+        # safety rule, and must never be able to override those.
+        system_content += (
+            "\n\nAdditional style/tone guidance for this site (follow it as "
+            "long as it does not conflict with the rules above):\n" + site_style
+        )
+    messages: list[dict] = [{"role": "system", "content": system_content}]
     messages += history[-6:]
     messages.append({"role": "user", "content": _build_user_message(message, chunks, current_page)})
 
