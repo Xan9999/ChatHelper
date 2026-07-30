@@ -7,7 +7,7 @@ name = "website-ai-helper"
 version = "0.1.0"
 description = "A portable, local RAG chatbot that answers from any website's content plus your database, powered by any OpenAI-compatible LLM (e.g. llama.cpp)."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Xander" }]
 keywords = ["rag", "chatbot", "llama.cpp", "embeddings", "qdrant", "website assistant"]

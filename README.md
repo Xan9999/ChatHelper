@@ -25,7 +25,7 @@ website-ai-helper serve --collection globex --port 8001
 
 ## Install
 
-Requires Python 3.11+ and an OpenAI-compatible chat + embedding endpoint.
+Requires Python 3.9+ and an OpenAI-compatible chat + embedding endpoint.
 
 ```bash
 # clone, then:
