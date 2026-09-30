@@ -13,7 +13,14 @@ from pathlib import Path
 import requests as http_requests
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from starlette.concurrency import run_in_threadpool
 
 from chathelper import config, qa, vectorstore
@@ -138,13 +145,22 @@ app.add_middleware(
 
 
 @app.get("/")
-def index() -> dict:
-    return {
-        "service": "ChatHelper",
-        "status": "ok",
-        "widget": "/widget.js",
-        "health": "/health",
-    }
+def index(request: Request) -> Response:
+    # An embed snippet that points at the bare host instead of /widget.js is a
+    # common copy-paste slip; the browser then refuses JSON as a script. Send
+    # such requests to the widget, keeping client_id/language in the query.
+    # document.currentScript.src still holds the original URL, so the widget
+    # reads its parameters exactly as if /widget.js had been used directly.
+    if "client_id" in request.query_params:
+        return RedirectResponse(f"/widget.js?{request.url.query}", status_code=302)
+    return JSONResponse(
+        {
+            "service": "ChatHelper",
+            "status": "ok",
+            "widget": "/widget.js",
+            "health": "/health",
+        }
+    )
 
 
 @app.get("/health")

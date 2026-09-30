@@ -35,6 +35,11 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.json()["service"], "ChatHelper")
         self.assertNotIn("text/html", response.headers["content-type"])
 
+    def test_root_with_client_id_redirects_to_widget(self) -> None:
+        response = self.client.get("/?client_id=adr&language=it", follow_redirects=False)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["location"], "/widget.js?client_id=adr&language=it")
+
     def test_chat_rejects_invalid_inputs(self) -> None:
         for payload, status in (
             ({"message": ""}, 422),

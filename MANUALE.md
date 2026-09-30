@@ -82,13 +82,16 @@ di solito nel footer (il fondo di ogni pagina), simile a questo:
 !function(d,u,i,l){
     var s=d.createElement("script");s.async=1;s.src=u+"?client_id="+i+"&language="+l;
     var h=d.getElementsByTagName("script")[0];h.parentNode.insertBefore(s,h);
-}(document,"https://indirizzo-fornito","vostro-codice-sito","it");
+}(document,"https://srv.tallweb.eu/widget.js","vostro-codice-sito","it");
 </script>
 ```
 
-Non serve capire il funzionamento interno — bastano due informazioni, che vi
+Non serve capire il funzionamento interno — bastano tre informazioni, che vi
 verranno fornite già pronte:
 
+- **`https://srv.tallweb.eu/widget.js`**: l'indirizzo del widget. Deve
+  terminare con `/widget.js`: il solo nome del server non basta e il browser
+  segnalerebbe un errore di tipo MIME.
 - **`vostro-codice-sito`**: un identificativo che dice all'assistente quali
   contenuti usare per rispondere (ogni sito ha il proprio).
 - **`"it"`**: la lingua dei testi del widget stesso (pulsanti, messaggio di
