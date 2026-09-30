@@ -1,0 +1,27 @@
+[Unit]
+Description=ChatHelper website assistant (Uvicorn)
+After=network-online.target postgresql.service qdrant.service
+Wants=network-online.target
+Requires=postgresql.service qdrant.service
+
+[Service]
+User=chathelper
+Group=chathelper
+WorkingDirectory=/srv/chathelper/app
+ExecStart=/srv/chathelper/venv/bin/uvicorn chathelper.main:app \
+    --host 127.0.0.1 --port 8000 --workers 2 \
+    --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=always
+RestartSec=3
+TimeoutStopSec=45
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/chathelper/data
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

@@ -6,10 +6,10 @@ widget also sends the visitor's current page as context. PostgreSQL stores
 conversation logs for the private QA review page. There is no product, order,
 or live-commerce database integration.
 
-The supported production deployment is a Linux VPS with Docker Compose. See
-[DEPLOYMENT.md](DEPLOYMENT.md) for the step-by-step VPS guide, host prerequisites,
-secrets, backups, upgrades, and recovery. Nothing in this repository has been
-deployed to a server for you.
+Two deployment paths are documented in [DEPLOYMENT.md](DEPLOYMENT.md): Docker
+Compose for a dedicated Linux VPS (Path A), and a native systemd install for an
+existing hosting server where Docker is unavailable and Apache already owns
+ports 80/443 (Path B, the current production on `srv.tallweb.eu`).
 
 ## Architecture
 

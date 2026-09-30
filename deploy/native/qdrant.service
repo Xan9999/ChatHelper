@@ -1,0 +1,27 @@
+[Unit]
+Description=Qdrant vector database (ChatHelper)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=qdrant
+Group=qdrant
+WorkingDirectory=/srv/chathelper/qdrant
+Environment=QDRANT__SERVICE__HOST=127.0.0.1
+Environment=QDRANT__SERVICE__HTTP_PORT=6333
+Environment=QDRANT__SERVICE__GRPC_PORT=6334
+Environment=QDRANT__STORAGE__STORAGE_PATH=/srv/chathelper/qdrant/storage
+Environment=QDRANT__STORAGE__SNAPSHOTS_PATH=/srv/chathelper/qdrant/snapshots
+Environment=QDRANT__TELEMETRY_DISABLED=true
+ExecStart=/opt/qdrant/qdrant
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/chathelper/qdrant
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

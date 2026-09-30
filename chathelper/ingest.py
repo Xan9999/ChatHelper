@@ -30,13 +30,22 @@ _SKIP_EXTENSIONS = (
     ".woff", ".woff2", ".ttf", ".otf", ".eot",
     ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods",
 )
-# Query parameters that never change the page content. Left in, the same
-# product page reached through share/campaign links is crawled once per
-# variant and eats the page budget.
-_TRACKING_PARAMS = {
+# Query parameters that do not produce a page worth indexing separately:
+# tracking ids, and shop listing controls (sort order, page size, stock or
+# price filters) that only re-arrange products already reachable elsewhere.
+# Left in, the same listing is crawled once per variant and eats the budget.
+_DROP_PARAM_PREFIXES = ("utm_", "filter_")
+_DROP_PARAMS = {
     "fbclid", "gclid", "dclid", "msclkid", "mc_cid", "mc_eid", "yclid",
     "igshid", "_ga", "_gl",
+    "orderby", "per_page", "stock_status", "min_price", "max_price",
+    "rating_filter", "add-to-cart", "replytocom",
 }
+
+
+def _drop_param(name: str) -> bool:
+    name = name.lower()
+    return name.startswith(_DROP_PARAM_PREFIXES) or name in _DROP_PARAMS
 
 
 def _normalize_url(url: str) -> str:
@@ -51,7 +60,7 @@ def _normalize_url(url: str) -> str:
     if query:
         kept = [
             (k, v) for k, v in parse_qsl(query, keep_blank_values=True)
-            if not (k.lower().startswith("utm_") or k.lower() in _TRACKING_PARAMS)
+            if not _drop_param(k)
         ]
         if len(kept) != len(parse_qsl(query, keep_blank_values=True)):
             query = "&".join(f"{k}={v}" if v else k for k, v in kept)

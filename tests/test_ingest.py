@@ -12,6 +12,10 @@ class UrlNormalizationTests(unittest.TestCase):
         url = "https://Shop.example.com/p/1?utm_source=fb&color=red&fbclid=abc#reviews"
         self.assertEqual(ingest._normalize_url(url), "https://shop.example.com/p/1?color=red")
 
+    def test_shop_listing_controls_are_dropped_but_pagination_kept(self) -> None:
+        url = "https://shop.example.com/negozio/?per_page=12&orderby=price&stock_status=instock&paged=2&filter_color=red"
+        self.assertEqual(ingest._normalize_url(url), "https://shop.example.com/negozio/?paged=2")
+
     def test_untouched_query_string_is_kept_verbatim(self) -> None:
         url = "https://example.com/search?q=a%20b&page=2"
         self.assertEqual(ingest._normalize_url(url), url)

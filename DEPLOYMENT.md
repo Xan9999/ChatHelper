@@ -271,6 +271,70 @@ bash scripts/deploy.sh down
 Never add `--volumes` to `docker compose down` unless you deliberately intend
 to destroy PostgreSQL, Qdrant, and Caddy certificate state.
 
+## Path B — existing hosting server without Docker (the current production)
+
+`srv.tallweb.eu` is an AlmaLinux 8 **DirectAdmin** server running inside an
+LXC container: Apache already owns ports 80/443, and the container's read-only
+cgroup and `/sys` mounts make Docker unusable. Production therefore runs
+natively. Chat **and** embeddings come from the OpenAI API
+(`text-embedding-3-large`, 3072-d), so no model files or GPU are involved;
+collections were re-ingested on the server in that schema.
+
+| Component | How it runs | Where |
+|---|---|---|
+| App (Uvicorn, 2 workers, `127.0.0.1:8000`) | systemd `chathelper.service`, user `chathelper` | code `/srv/chathelper/app`, venv `/srv/chathelper/venv`, config `/srv/chathelper/app/.env` |
+| PostgreSQL 16 | AppStream module, systemd `postgresql`, scram auth on loopback | `/var/lib/pgsql/data`, db `chathelper`, role `chathelper_app` |
+| Qdrant 1.19 | static binary, systemd `qdrant.service`, user `qdrant`, loopback only | `/opt/qdrant/qdrant`, data `/srv/chathelper/qdrant` |
+| Public HTTPS | Apache vhosts for the hostname, DirectAdmin's Let's Encrypt certificate | `/etc/httpd/conf/extra/chathelper.conf`, included from `httpd-includes.conf` |
+| Secrets (0600, owner `chathelper`) | plain files referenced via `*_FILE` | `/srv/chathelper/secrets/{llm_api_key,app_db_password,qa_token}.txt` |
+
+Install or re-apply everything except Apache with
+[scripts/install-native.sh](scripts/install-native.sh) (idempotent, run as
+root). The Apache vhost is [deploy/native/apache-chathelper.conf](deploy/native/apache-chathelper.conf);
+install it with:
+
+```bash
+cp deploy/native/apache-chathelper.conf /etc/httpd/conf/extra/chathelper.conf
+grep -q chathelper.conf /etc/httpd/conf/extra/httpd-includes.conf \
+  || echo "Include conf/extra/chathelper.conf" >> /etc/httpd/conf/extra/httpd-includes.conf
+httpd -t && systemctl reload httpd
+```
+
+The vhost keeps `/.well-known/acme-challenge/` on disk so DirectAdmin's
+hostname-certificate renewal keeps working, disables the global DEFLATE filter
+for `/chat` so the event stream is not buffered, and caps request bodies at
+1 MB. CSF already allows 80/443; the app, PostgreSQL and Qdrant listen on
+loopback only.
+
+Day-to-day operations (as root):
+
+```bash
+systemctl status chathelper qdrant postgresql
+journalctl -u chathelper -n 100 -f
+curl -fsS https://srv.tallweb.eu/ready
+
+# ingest / refresh a site (runs as the app user; use tmux for large crawls)
+runuser -u chathelper -- bash -c 'cd /srv/chathelper/app && /srv/chathelper/venv/bin/chathelper ingest https://www.ricambiribi.com --collection ricambiribi --site-name "Ricambi Ribi" --max-pages 500'
+
+# update to the latest commit
+cd /srv/chathelper/app && git pull --ff-only && /srv/chathelper/venv/bin/pip install -q -e . && systemctl restart chathelper
+
+# backup (PostgreSQL dump + Qdrant snapshots, keeps the newest 14) and retention
+bash /srv/chathelper/app/scripts/backup-native.sh
+runuser -u chathelper -- bash -c 'cd /srv/chathelper/app && /srv/chathelper/venv/bin/chathelper prune --days 90'
+```
+
+Suggested root crontab:
+
+```cron
+15 3 * * * bash /srv/chathelper/app/scripts/backup-native.sh >> /srv/chathelper/logs/backup.log 2>&1
+15 4 * * * runuser -u chathelper -- bash -c 'cd /srv/chathelper/app && /srv/chathelper/venv/bin/chathelper prune --days 90' >> /srv/chathelper/logs/prune.log 2>&1
+```
+
+The QA token is `cat /srv/chathelper/secrets/qa_token.txt`; sign in at
+`https://srv.tallweb.eu/qa/login`. Rotate the OpenAI key by replacing the
+contents of `llm_api_key.txt` and running `systemctl restart chathelper`.
+
 ## Reverse-proxy and CDN notes
 
 If Cloudflare is added later, it sits before Caddy:
