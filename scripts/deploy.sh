@@ -46,8 +46,13 @@ prepare() {
     if [[ ! -s "$SECRETS_DIR/qa_token.txt" ]]; then
         openssl rand -hex 32 > "$SECRETS_DIR/qa_token.txt"
     fi
+    if [[ ! -f "$SECRETS_DIR/llm_api_key.txt" ]]; then
+        : > "$SECRETS_DIR/llm_api_key.txt"
+    fi
     echo "Secrets are ready in $SECRETS_DIR (never commit this directory)."
-    echo "Edit $ENV_FILE, place model files in MODELS_DIR, then run:"
+    echo "Paste the hosted chat API key (OpenAI) into $SECRETS_DIR/llm_api_key.txt,"
+    echo "one line, no quotes. Edit $ENV_FILE, place the embedding GGUF in"
+    echo "MODELS_DIR (default local-embed profile), then run:"
     echo "  bash scripts/deploy.sh validate"
 }
 
@@ -58,16 +63,34 @@ validate() {
     [[ -s "$SECRETS_DIR/postgres_password.txt" ]] || die "Missing PostgreSQL secret"
     [[ -s "$SECRETS_DIR/app_db_password.txt" ]] || die "Missing app database secret"
     [[ -s "$SECRETS_DIR/qa_token.txt" ]] || die "Missing QA secret"
+    [[ -f "$SECRETS_DIR/llm_api_key.txt" ]] || die "Missing $SECRETS_DIR/llm_api_key.txt; run prepare first"
     if grep -Eq '(^|=)(CHANGE_ME|example\.com|admin@example\.com)' "$ENV_FILE"; then
         die "Replace placeholder values in $ENV_FILE"
     fi
-    local models_dir chat_model embed_model
+    # Which model services run is decided by COMPOSE_PROFILES in .env.production:
+    #   (none)      chat + embeddings from a hosted API (needs the key secret)
+    #   local-embed embeddings from the CPU llama.cpp container (default)
+    #   local-llm   chat from the GPU llama.cpp container (needs NVIDIA toolkit)
+    local profiles models_dir chat_model embed_model llm_url
+    profiles=",$(env_value COMPOSE_PROFILES),"
     models_dir="$(env_value MODELS_DIR)"
-    chat_model="$(env_value CHAT_MODEL_FILE)"
-    embed_model="$(env_value EMBED_MODEL_FILE)"
-    [[ "$models_dir" = /* ]] || die "MODELS_DIR must be an absolute path"
-    [[ -r "$models_dir/$chat_model" ]] || die "Chat model not readable: $models_dir/$chat_model"
-    [[ -r "$models_dir/$embed_model" ]] || die "Embedding model not readable: $models_dir/$embed_model"
+    llm_url="$(env_value LLM_BASE_URL)"
+    if [[ "$profiles" == *,local-llm,* ]]; then
+        chat_model="$(env_value CHAT_MODEL_FILE)"
+        [[ "$models_dir" = /* ]] || die "MODELS_DIR must be an absolute path"
+        [[ -n "$chat_model" && -r "$models_dir/$chat_model" ]] \
+            || die "Chat model not readable: $models_dir/$chat_model (local-llm profile)"
+    else
+        [[ -n "$llm_url" ]] || die "Set LLM_BASE_URL in $ENV_FILE (hosted chat API) or enable the local-llm profile"
+        [[ -s "$SECRETS_DIR/llm_api_key.txt" ]] \
+            || die "Paste the hosted chat API key into $SECRETS_DIR/llm_api_key.txt (or enable the local-llm profile)"
+    fi
+    if [[ "$profiles" == *,local-embed,* ]]; then
+        embed_model="$(env_value EMBED_MODEL_FILE)"
+        [[ "$models_dir" = /* ]] || die "MODELS_DIR must be an absolute path"
+        [[ -n "$embed_model" && -r "$models_dir/$embed_model" ]] \
+            || die "Embedding model not readable: $models_dir/$embed_model (local-embed profile)"
+    fi
     docker info >/dev/null
     "${COMPOSE[@]}" config --quiet
     echo "Compose configuration is valid."

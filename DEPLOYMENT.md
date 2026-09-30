@@ -1,8 +1,10 @@
 # ChatHelper production deployment
 
-This deployment is designed for one Linux VPS with an NVIDIA GPU, Docker
-Engine, Docker Compose v2, and root access for the initial host setup. It does
-not run Passenger. Uvicorn serves FastAPI natively as ASGI.
+This deployment is designed for one Linux VPS with Docker Engine, Docker
+Compose v2, and root access for the initial host setup. A CPU-only VPS is
+enough: chat answers come from the OpenAI API and embeddings run in a small
+local CPU container. A GPU is needed only for the optional local chat model
+profile. It does not run Passenger. Uvicorn serves FastAPI natively as ASGI.
 
 ## Architecture
 
@@ -18,12 +20,13 @@ ChatHelper / Uvicorn :8000
    ├── PostgreSQL :5432  ── volume: postgres_data
    │    └── one-shot db-init creates the limited app login
    ├── Qdrant :6333      ── volume: qdrant_data
-   ├── llama.cpp chat :8080
-   └── llama.cpp embeddings :8081
+   ├── llama.cpp embeddings :8081 (CPU, bge-m3; profile local-embed)
+   └── ──────────────────────► OpenAI API (chat; key from a secret file)
+        optional profile local-llm: llama.cpp chat :8080 on a GPU instead
 ```
 
-Only Caddy publishes host ports. PostgreSQL, Qdrant, Uvicorn, and both model
-servers are not reachable directly from the internet. Caddy owns HTTPS,
+Only Caddy publishes host ports. PostgreSQL, Qdrant, Uvicorn, and the
+embedding server are not reachable directly from the internet. Caddy owns HTTPS,
 certificate renewal, security headers, request-size enforcement, health-aware
 proxying, and flushing streamed chat responses. Caddy automatically flushes
 `text/event-stream` responses without a special buffering override. This keeps TLS
@@ -48,16 +51,36 @@ ChatHelper app container.
 ## Host prerequisites
 
 1. Point the DNS `A`/`AAAA` record for the configured `CHAT_DOMAIN` at the VPS.
-2. Install the NVIDIA driver, Docker Engine, the Docker Compose plugin, and
-   NVIDIA Container Toolkit using their official instructions for the VPS OS.
+2. Install Docker Engine and the Docker Compose plugin using their official
+   instructions for the VPS OS. The NVIDIA driver and NVIDIA Container Toolkit
+   are required only if you enable the `local-llm` profile.
 3. Before enabling a firewall, allow the actual SSH port you use. Publicly
    allow only SSH, TCP 80, TCP 443, and optionally UDP 443 for HTTP/3.
 4. Ensure no existing web server is using ports 80 or 443.
-5. Put the GGUF files in a root-owned deployment directory such as
-   `/srv/chathelper/models`; Compose mounts it read-only.
+5. Put the embedding model `bge-m3-Q8_0.gguf` (about 600 MB) in a root-owned
+   deployment directory such as `/srv/chathelper/models`; Compose mounts it
+   read-only. Add the chat GGUF there too only for the `local-llm` profile.
+6. Size the VPS for the embedding container: roughly 1 GB of RAM on top of
+   the app, PostgreSQL, and Qdrant. Query embeddings take milliseconds on CPU;
+   ingesting a site with thousands of pages is CPU-bound and slower than on a
+   GPU, so run large crawls off-peak.
 
 Do not expose ports 5432, 6333, 6334, 8000, 8080, or 8081 in the VPS firewall.
 The Compose file intentionally uses `expose`, not `ports`, for those services.
+
+## Model options
+
+| `COMPOSE_PROFILES` | Chat | Embeddings | Notes |
+|---|---|---|---|
+| `local-embed` (default) | OpenAI API via `LLM_BASE_URL`, `LLM_MODEL` | bge-m3 in the CPU `embed` container | Existing collections (1024-d) keep working. |
+| `local-embed,local-llm` | `llm` GPU container | same | Set `LLM_BASE_URL=http://llm:8080/v1`, `LLM_MODEL=local-chat`, `LLM_EXTRA_BODY` for the model. |
+| empty | OpenAI API | OpenAI `text-embedding-3-small` | Set `EMBED_BASE_URL=https://api.openai.com/v1`, `EMBED_DIM=1536`; re-ingest every collection. |
+
+The OpenAI key lives only in `secrets/llm_api_key.txt`; it is mounted into
+the app container and read at startup. It is also used for hosted embeddings
+and ignored by the local llama.cpp servers. Every visitor question, the
+retrieved website text, and up to `PAGE_MAX_CHARS` of the visitor's current
+page are sent to OpenAI with the default configuration.
 
 ## First-time preparation
 
@@ -73,22 +96,26 @@ bash scripts/deploy.sh prepare
 - a random PostgreSQL administrator password in `secrets/postgres_password.txt`;
 - a separate random app-login password in `secrets/app_db_password.txt`;
 - a random QA login token in `secrets/qa_token.txt`;
+- an empty `secrets/llm_api_key.txt` for the OpenAI API key;
 - a private `backups/` directory.
 
-It does not start or deploy anything. Edit the configuration:
+It does not start or deploy anything. Paste the OpenAI key (one line, no
+quotes) and edit the configuration:
 
 ```bash
+printf '%s' 'sk-...' > secrets/llm_api_key.txt
 nano .env.production
 ```
 
-At minimum, verify `CHAT_DOMAIN`, `ACME_EMAIL`, `MODELS_DIR`, both model
-filenames, `ALLOWED_ORIGINS`, embedding dimension, model concurrency, and
-context size. `ALLOWED_ORIGINS` contains the websites embedding the widget,
-not the ChatHelper backend domain.
+At minimum, verify `CHAT_DOMAIN`, `ACME_EMAIL`, `LLM_MODEL`,
+`COMPOSE_PROFILES`, `MODELS_DIR` and `EMBED_MODEL_FILE`, `EMBED_DIM`, and
+`ALLOWED_ORIGINS`. `ALLOWED_ORIGINS` contains the websites embedding the
+widget, not the ChatHelper backend domain.
 
 Keep `.env.production`, `secrets/`, `backups/`, and model files outside Git.
-Back up the three secret files separately in an encrypted password manager or
-offline secret store.
+Back up the four secret files separately in an encrypted password manager or
+offline secret store. Rotating the OpenAI key is safe at any time: replace the
+file's contents and run `bash scripts/deploy.sh restart`.
 Do not replace the administrator-password file after PostgreSQL has initialized:
 the on-disk database password does not change when the file changes. Rotate
 database passwords with an explicit SQL change and coordinated container
@@ -125,8 +152,8 @@ curl -fsS https://chat.tallweb.net/health
 curl -fsS https://chat.tallweb.net/ready
 ```
 
-`/health` is process liveness. `/ready` verifies PostgreSQL, Qdrant, and both
-model endpoints.
+`/health` is process liveness. `/ready` verifies PostgreSQL, Qdrant, the chat
+API, and the embedding endpoint.
 
 ## Ingest website content
 
@@ -190,11 +217,13 @@ connections are approximately:
 APP_WORKERS × DB_POOL_MAX_SIZE
 ```
 
-`LLM_SLOTS` separately controls concurrent model generations. Extra chats may
-wait when all model slots are occupied. Keep `LLM_CTX` near
-`LLM_SLOTS × 4096`, subject to GPU memory. Start with two app workers and two
-model slots, then load-test and observe CPU, RAM, VRAM, latency, database pool
-waits, and model queueing before increasing them.
+With the default hosted chat API, the number of answers generating at once is
+bounded by your OpenAI rate limits and each worker's thread pool, not by a
+local GPU. With the `local-llm` profile, `LLM_SLOTS` controls concurrent
+generations and extra chats wait when all slots are occupied; keep `LLM_CTX`
+near `LLM_SLOTS × 4096`, subject to GPU memory. Start with two app workers,
+then load-test and observe CPU, RAM, latency, database pool waits, and API
+errors or model queueing before increasing them.
 
 ## Backups
 

@@ -42,7 +42,9 @@ DATA_DIR = Path(_get("DATA_DIR", "data")).resolve()
 
 # --- LLM (chat) endpoint — any OpenAI-compatible server ---
 LLM_BASE_URL = _get("LLM_BASE_URL", "http://127.0.0.1:8080/v1")
-LLM_API_KEY = _get("LLM_API_KEY", "sk-local")   # llama.cpp ignores the value
+# llama.cpp ignores the key; a hosted API (OpenAI) needs the real one. In
+# Docker it arrives as a mounted secret via LLM_API_KEY_FILE.
+LLM_API_KEY = _secret("LLM_API_KEY", "sk-local") or "sk-local"  # empty file -> placeholder
 LLM_MODEL = _get("LLM_MODEL", "local-chat")
 # Extra JSON fields merged into every chat completion request body. Defaults
 # to disabling Qwen3's hybrid "thinking" mode (see agent.py), which is only
@@ -59,7 +61,7 @@ EMBED_TIMEOUT = float(_get("EMBED_TIMEOUT", "60"))
 
 # --- Embedding endpoint ---
 EMBED_BASE_URL = _get("EMBED_BASE_URL", "http://127.0.0.1:8081/v1")
-EMBED_API_KEY = _get("EMBED_API_KEY", "sk-local")
+EMBED_API_KEY = _secret("EMBED_API_KEY", "sk-local") or "sk-local"
 EMBED_MODEL = _get("EMBED_MODEL", "local-embed")
 # Defaults match the recommended bge-m3 model (1024-d, no task prefixes).
 # nomic-embed-text is 768-d and needs "search_document: " / "search_query: ".

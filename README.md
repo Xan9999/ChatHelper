@@ -17,8 +17,10 @@ deployed to a server for you.
 visitor's browser → Caddy (public HTTPS) → ChatHelper / Uvicorn
                                            ├─ Qdrant (website knowledge)
                                            ├─ PostgreSQL (conversation logs)
-                                           ├─ llama.cpp chat server
-                                           └─ llama.cpp embedding server
+                                           ├─ chat model: OpenAI API (default)
+                                           │             or local llama.cpp on a GPU
+                                           └─ embeddings: local llama.cpp on CPU (default)
+                                                         or OpenAI API
 ```
 
 Only Caddy publishes host ports (80 and 443). The app and its data/model
@@ -29,11 +31,16 @@ PostgreSQL and Qdrant have separate persistent Docker volumes, so rebuilding
 or replacing the app container does not erase either database. Back up both
 volumes' *contents* regularly; a volume by itself is not a backup.
 
+The default production configuration needs no GPU: chat answers come from the
+OpenAI API (key in a secret file) and embeddings from a small local llama.cpp
+CPU container running bge-m3, so the collections you already ingested keep
+working. The local GPU chat model is an optional Compose profile.
+
 Two Uvicorn workers are configured by default. Each worker has a PostgreSQL
 connection pool; `APP_WORKERS × DB_POOL_MAX_SIZE` is the approximate maximum
-connection count. `LLM_SLOTS` independently limits simultaneous model
-generations. More HTTP workers cannot make a GPU model generate more answers
-than its available slots.
+connection count. With the hosted chat API, how many answers generate at once
+is bounded by your OpenAI rate limits; with the local model profile it is
+`LLM_SLOTS`, and more HTTP workers cannot exceed it.
 
 ## Install from Git for local development
 
@@ -82,26 +89,34 @@ endpoints. The old preview and product/order examples were removed.
 
 ## Prepare a Linux VPS deployment
 
-The provided Compose stack assumes an NVIDIA GPU, a driver and NVIDIA
-Container Toolkit on the VPS, and two GGUF model files. It does not run
-Passenger, SQLite, or a second public web server. If the VPS is CPU-only or
-uses a hosted model API, adapt the model services before deployment.
+A CPU-only Linux VPS with Docker Engine and Compose v2 is enough for the
+default configuration. The stack does not run Passenger, SQLite, or a second
+public web server. Model containers are Compose profiles selected with
+`COMPOSE_PROFILES` in `.env.production`:
+
+| `COMPOSE_PROFILES` | Chat | Embeddings | Host needs |
+|---|---|---|---|
+| `local-embed` (default) | OpenAI API | bge-m3 in a CPU llama.cpp container | `bge-m3-Q8_0.gguf` in `MODELS_DIR` |
+| `local-embed,local-llm` | local GGUF on a GPU | same | NVIDIA driver, Container Toolkit, chat GGUF |
+| empty | OpenAI API | OpenAI `text-embedding-3-small` | nothing local; every site must be re-ingested (1536-d vectors) |
 
 ```bash
 git clone https://github.com/Xan9999/ChatHelper.git /srv/chathelper/app
 cd /srv/chathelper/app
 bash scripts/deploy.sh prepare    # creates private config and random secrets
-# edit .env.production and place GGUF files in MODELS_DIR
+# paste the OpenAI key into secrets/llm_api_key.txt, edit .env.production,
+# put bge-m3-Q8_0.gguf into MODELS_DIR
 bash scripts/deploy.sh validate   # checks inputs and Compose without starting
 bash scripts/deploy.sh up         # starts only when you decide to deploy
 ```
 
 `prepare` generates `.env.production` from
-[.env.production.example](.env.production.example), plus separate PostgreSQL
-administrator, limited app-login, and QA secret files. These are excluded from
-Git and the image build. Review
-the domain, email, absolute `MODELS_DIR`, model filenames, embedding dimension,
-and `ALLOWED_ORIGINS` before running `up`. The domain must point to the VPS;
+[.env.production.example](.env.production.example), random PostgreSQL
+administrator, limited app-login and QA secret files, and an empty
+`secrets/llm_api_key.txt` for the OpenAI key. These are excluded from Git and
+the image build. Review the domain, email, `LLM_MODEL`, `COMPOSE_PROFILES`,
+absolute `MODELS_DIR` and `EMBED_MODEL_FILE`, `EMBED_DIM`, and
+`ALLOWED_ORIGINS` before running `up`. The domain must point to the VPS;
 ports 80 and 443 must be reachable for automatic TLS. Do not publish 5432,
 6333, 8000, 8080, or 8081.
 

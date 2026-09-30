@@ -131,7 +131,7 @@ non serve aprire un terminale separato per ciascuno:
 |---|---|
 | **Qdrant** | È il "magazzino" dove restano conservati i contenuti del sito già letti — uno scaffale separato per ogni sito gestito. |
 | **Embeddings** | È il motore che sa "cercare per significato": lo usa sia quando si legge un nuovo sito, sia ogni volta che un visitatore fa una domanda, per trovare le informazioni giuste. |
-| **LLM (modello di chat)** | È il motore che scrive davvero le risposte — il "cervello" che compone il testo che il visitatore legge. |
+| **LLM (modello di chat)** | È il motore che scrive davvero le risposte — il "cervello" che compone il testo che il visitatore legge. Nella configurazione standard è il servizio ChatGPT di OpenAI (le domande e il testo della pagina visitata vengono quindi inviati a OpenAI); in alternativa può essere un modello installato sul vostro server. |
 | **PostgreSQL** | Conserva le conversazioni per la consultazione privata; non contiene cataloghi prodotti o ordini. |
 | **ChatHelper** | Riceve le domande dal widget e coordina gli altri servizi. |
 | **Caddy** | Offre l'indirizzo HTTPS pubblico e inoltra le richieste a ChatHelper. |

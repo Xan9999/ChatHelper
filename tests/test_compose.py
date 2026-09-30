@@ -53,8 +53,13 @@ class ComposeSafetyTests(unittest.TestCase):
         self.assertIn("app_db_password", services["app"]["secrets"])
         self.assertNotIn("postgres_password", services["app"]["secrets"])
         self.assertIn("qa_token", services["app"]["secrets"])
+        self.assertIn("llm_api_key", services["app"]["secrets"])
         self.assertEqual(
-            set(self.document["secrets"]), {"postgres_password", "app_db_password", "qa_token"}
+            services["app"]["environment"]["LLM_API_KEY_FILE"], "/run/secrets/llm_api_key"
+        )
+        self.assertEqual(
+            set(self.document["secrets"]),
+            {"postgres_password", "app_db_password", "qa_token", "llm_api_key"},
         )
         self.assertEqual(services["app"]["environment"]["POSTGRES_USER"], "chathelper_app")
         self.assertEqual(services["postgres"]["environment"]["POSTGRES_USER"], "postgres")
@@ -62,6 +67,18 @@ class ComposeSafetyTests(unittest.TestCase):
             services["app"]["depends_on"]["db-init"]["condition"],
             "service_completed_successfully",
         )
+
+    def test_local_model_servers_are_optional_profiles(self) -> None:
+        # Production chat uses a hosted API; the llama.cpp containers must not
+        # be required, and only the GPU chat profile may reserve a GPU.
+        services = self.document["services"]
+        self.assertEqual(services["llm"]["profiles"], ["local-llm"])
+        self.assertEqual(services["embed"]["profiles"], ["local-embed"])
+        self.assertNotIn("llm", services["app"]["depends_on"])
+        self.assertNotIn("embed", services["app"]["depends_on"])
+        for name, service in services.items():
+            has_gpu = "devices" in service.get("deploy", {}).get("resources", {}).get("reservations", {})
+            self.assertEqual(has_gpu, name == "llm", name)
 
 
 if __name__ == "__main__":

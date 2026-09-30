@@ -1,5 +1,13 @@
 name: ${COMPOSE_PROJECT_NAME:-chathelper}
 
+# Model servers are optional Compose profiles, chosen with COMPOSE_PROFILES in
+# .env.production:
+#   (empty)      chat AND embeddings from a hosted OpenAI-compatible API
+#   local-embed  embeddings from the CPU llama.cpp container (default: keeps
+#                the multilingual bge-m3 vectors already ingested, no GPU)
+#   local-llm    chat from a GPU llama.cpp container (NVIDIA toolkit needed)
+# The default production setup is: chat = OpenAI API, embeddings = local-embed.
+
 services:
   caddy:
     image: ${CADDY_IMAGE:-caddy:2.11.4-alpine}
@@ -52,16 +60,20 @@ services:
       - --forwarded-allow-ips=*
     environment:
       DATA_DIR: /tmp/chathelper
-      LLM_BASE_URL: http://llm:8080/v1
-      LLM_API_KEY: sk-local
-      LLM_MODEL: local-chat
+      # Chat model: hosted API by default. The key is a mounted secret; the
+      # same file also serves hosted embeddings and is ignored by llama.cpp.
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.openai.com/v1}
+      LLM_API_KEY_FILE: /run/secrets/llm_api_key
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
       LLM_EXTRA_BODY: ${LLM_EXTRA_BODY:?Set LLM_EXTRA_BODY in .env.production}
-      EMBED_BASE_URL: http://embed:8081/v1
-      EMBED_API_KEY: sk-local
-      EMBED_MODEL: local-embed
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-120}
+      EMBED_BASE_URL: ${EMBED_BASE_URL:-http://embed:8081/v1}
+      EMBED_API_KEY_FILE: /run/secrets/llm_api_key
+      EMBED_MODEL: ${EMBED_MODEL:-local-embed}
       EMBED_DIM: ${EMBED_DIM:-1024}
       EMBED_DOC_PREFIX: ${EMBED_DOC_PREFIX:-}
       EMBED_QUERY_PREFIX: ${EMBED_QUERY_PREFIX:-}
+      EMBED_TIMEOUT: ${EMBED_TIMEOUT:-60}
       QDRANT_URL: http://qdrant:6333
       QDRANT_COLLECTION: ${QDRANT_COLLECTION:-default}
       POSTGRES_HOST: postgres
@@ -93,6 +105,7 @@ services:
       CRAWL_SAME_DOMAIN: ${CRAWL_SAME_DOMAIN:-1}
       CRAWL_PDFS: ${CRAWL_PDFS:-1}
       CRAWL_PDF_MAX_MB: ${CRAWL_PDF_MAX_MB:-20}
+      CRAWL_MAX_PAGE_MB: ${CRAWL_MAX_PAGE_MB:-5}
       BOILERPLATE_STRIP: ${BOILERPLATE_STRIP:-1}
       BOILERPLATE_MIN_PAGES: ${BOILERPLATE_MIN_PAGES:-4}
       BOILERPLATE_PAGE_FRACTION: ${BOILERPLATE_PAGE_FRACTION:-0.3}
@@ -101,19 +114,19 @@ services:
     secrets:
       - app_db_password
       - qa_token
+      - llm_api_key
     expose:
       - "8000"
     networks:
       - edge
       - backend
+    # No depends_on for the model services: they are profiles and may not be
+    # part of the stack at all. /ready (and the healthcheck below) report the
+    # app as ready only once the configured model endpoints answer.
     depends_on:
       db-init:
         condition: service_completed_successfully
       qdrant:
-        condition: service_started
-      llm:
-        condition: service_started
-      embed:
         condition: service_started
     healthcheck:
       test:
@@ -124,9 +137,9 @@ services:
       interval: 30s
       timeout: 7s
       retries: 5
-      # /ready fails until both model servers have loaded their GGUF files;
-      # a 9-19 GB model on a slow VPS disk can take several minutes. A too
-      # short start_period marks the app unhealthy and Caddy never starts.
+      # /ready fails until the embedding (and any local chat) model has
+      # loaded; a large GGUF on a slow VPS disk can take minutes. A too short
+      # start_period marks the app unhealthy and Caddy never starts.
       start_period: 300s
     restart: unless-stopped
     init: true
@@ -208,14 +221,19 @@ services:
     stop_grace_period: 60s
     logging: *default-logging
 
+  # Optional: local GPU chat model instead of the hosted API.
+  # Enable with COMPOSE_PROFILES=local-embed,local-llm and set
+  # LLM_BASE_URL=http://llm:8080/v1, LLM_MODEL=local-chat and
+  # LLM_EXTRA_BODY for the model (see .env.production.example).
   llm:
-    image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda12-b10884}
+    image: ${LLAMA_CUDA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda}
+    profiles: ["local-llm"]
     command: >-
-      -m /models/${CHAT_MODEL_FILE:?Set CHAT_MODEL_FILE in .env.production}
+      -m /models/${CHAT_MODEL_FILE:-chat.gguf}
       -ngl 99 -np ${LLM_SLOTS:-2} -c ${LLM_CTX:-8192} --cache-reuse 256
       --jinja --host 0.0.0.0 --port 8080 --alias local-chat
     volumes:
-      - ${MODELS_DIR:?Set MODELS_DIR in .env.production}:/models:ro
+      - ${MODELS_DIR:-/srv/chathelper/models}:/models:ro
     expose:
       - "8080"
     networks:
@@ -239,25 +257,22 @@ services:
     stop_grace_period: 60s
     logging: *default-logging
 
+  # Default: multilingual bge-m3 embeddings on CPU. Roughly 1 GB of RAM, no
+  # GPU. Query embeddings take milliseconds; ingesting a large site is slower
+  # than on a GPU but is an occasional, offline job.
   embed:
-    image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda12-b10884}
+    image: ${LLAMA_CPU_IMAGE:-ghcr.io/ggml-org/llama.cpp:server}
+    profiles: ["local-embed"]
     command: >-
-      -m /models/${EMBED_MODEL_FILE:?Set EMBED_MODEL_FILE in .env.production}
-      --embedding --pooling mean -ngl 99 -c 2048 -b 2048 -ub 2048
+      -m /models/${EMBED_MODEL_FILE:-bge-m3-Q8_0.gguf}
+      --embedding --pooling mean -c 2048 -b 2048 -ub 2048
       --host 0.0.0.0 --port 8081 --alias local-embed
     volumes:
-      - ${MODELS_DIR:?Set MODELS_DIR in .env.production}:/models:ro
+      - ${MODELS_DIR:-/srv/chathelper/models}:/models:ro
     expose:
       - "8081"
     networks:
       - backend
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     restart: unless-stopped
     init: true
     read_only: true
@@ -288,3 +303,5 @@ secrets:
     file: ./secrets/app_db_password.txt
   qa_token:
     file: ./secrets/qa_token.txt
+  llm_api_key:
+    file: ./secrets/llm_api_key.txt
