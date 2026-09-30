@@ -148,8 +148,8 @@ Certificate issuance requires working public DNS and inbound ports 80/443.
 Verify:
 
 ```bash
-curl -fsS https://chat.tallweb.net/health
-curl -fsS https://chat.tallweb.net/ready
+curl -fsS https://srv.tallweb.eu/health
+curl -fsS https://srv.tallweb.eu/ready
 ```
 
 `/health` is process liveness. `/ready` verifies PostgreSQL, Qdrant, the chat
@@ -184,7 +184,7 @@ Read the generated login token on the VPS only when needed:
 sudo cat secrets/qa_token.txt
 ```
 
-Open `https://chat.tallweb.net/qa/login` and submit that token. ChatHelper
+Open `https://srv.tallweb.eu/qa/login` and submit that token. ChatHelper
 stores only a derived, HttpOnly, Secure session cookie for eight hours. The
 secret is sent in a POST body rather than a URL, keeping it out of access logs
 and browser history.

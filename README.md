@@ -146,7 +146,7 @@ site's footer, replacing the hostname and collection as needed:
     +(p?"&position="+encodeURIComponent(p):"")
     +(a?"&accent="+encodeURIComponent(a):"");
   var h=d.getElementsByTagName("script")[0]; h.parentNode.insertBefore(s,h);
-}(document,"https://chat.tallweb.net/widget.js","tallweb","en");
+}(document,"https://srv.tallweb.eu/widget.js","tallweb","en");
 </script>
 ```
 
@@ -194,7 +194,7 @@ the app container never receives PostgreSQL's administrator password.
 Existing local SQLite conversation files are left untouched and are not
 automatically imported into PostgreSQL.
 
-Open `https://chat.tallweb.net/qa/login` and enter the generated QA token to
+Open `https://srv.tallweb.eu/qa/login` and enter the generated QA token to
 review conversations. Login uses a short-lived, signed, HttpOnly, Secure
 cookie; the token is never placed in a URL. If `QA_TOKEN` is empty, the review
 page is disabled but logging continues. Chat text may contain personal data:
