@@ -12,17 +12,17 @@ just gets the default look — nothing to configure for sites that don't need
 customizing.
 
 Useful hooks already in the base markup (see `chathelper/web/widget.js`
-for the full structure): `#wah-toggle` (the floating button), `#wah-panel`
-(the chat window), `.wah-hdr`, `.wah-msgs`, `.wah-msg.user`/`.wah-msg.bot`
-bubbles, `.wah-composer`. The base stylesheet also defines CSS custom
-properties (`--wah-accent`, `--wah-bg`, `--wah-fg`, `--wah-muted`,
-`--wah-panel`) you can simply reassign instead of rewriting whole rules:
+for the full structure): `#chathelper-toggle` (the floating button), `#chathelper-panel`
+(the chat window), `.chathelper-hdr`, `.chathelper-msgs`, `.chathelper-msg.user`/`.chathelper-msg.bot`
+bubbles, `.chathelper-composer`. The base stylesheet also defines CSS custom
+properties (`--chathelper-accent`, `--chathelper-bg`, `--chathelper-fg`, `--chathelper-muted`,
+`--chathelper-panel`) you can simply reassign instead of rewriting whole rules:
 
 ```css
 /* ricambiribi.css */
-:root { --wah-accent: #d4321c; }
-#wah-panel { font-family: "Segoe UI", sans-serif; border-radius: 4px; }
-#wah-toggle { background-image: url(https://ricambiribi.com/wp-content/uploads/logo-icon.png); }
+:root { --chathelper-accent: #d4321c; }
+#chathelper-panel { font-family: "Segoe UI", sans-serif; border-radius: 4px; }
+#chathelper-toggle { background-image: url(https://ricambiribi.com/wp-content/uploads/logo-icon.png); }
 ```
 
 For a one-line color/position tweak with no file at all, the `accent` and

@@ -37,9 +37,9 @@
 (function () {
   "use strict";
 
-  // The "wah-" id/class/variable prefix dates from the project's former name
-  // (Website AI Helper). It is a public styling hook used by per-site CSS
-  // overrides (widget_styles/*.css), so it deliberately stays unchanged.
+  // Every id, class and CSS variable the widget creates carries the
+  // "chathelper-" prefix: it keeps host-site styles from colliding with the
+  // widget and is the public hook for per-site overrides (widget_styles/*.css).
   var thisScript = document.currentScript ||
     (function () { var s = document.getElementsByTagName("script"); return s[s.length - 1]; })();
   var scriptUrl = new URL(thisScript.src, window.location.href);
@@ -63,34 +63,34 @@
   var t = Object.assign({}, STRINGS[LANG] || STRINGS.en);
 
   var css = ""
-    + ":root{--wah-accent:#3b5bdb;--wah-bg:#fff;--wah-fg:#1a1a2e;--wah-muted:#6b7280;--wah-panel:#f7f8fa;}"
-    + (ACCENT ? ":root{--wah-accent:" + ACCENT + ";}" : "")
-    + "#wah-toggle{position:fixed;bottom:24px;" + SIDE + ":24px;width:60px;height:60px;border-radius:50%;"
-    + "background:var(--wah-accent);color:#fff;border:none;font-size:26px;cursor:pointer;"
+    + ":root{--chathelper-accent:#3b5bdb;--chathelper-bg:#fff;--chathelper-fg:#1a1a2e;--chathelper-muted:#6b7280;--chathelper-panel:#f7f8fa;}"
+    + (ACCENT ? ":root{--chathelper-accent:" + ACCENT + ";}" : "")
+    + "#chathelper-toggle{position:fixed;bottom:24px;" + SIDE + ":24px;width:60px;height:60px;border-radius:50%;"
+    + "background:var(--chathelper-accent);color:#fff;border:none;font-size:26px;cursor:pointer;"
     + "box-shadow:0 6px 20px rgba(0,0,0,.25);z-index:999999;font-family:system-ui,sans-serif;}"
-    + "#wah-panel{position:fixed;bottom:96px;" + SIDE + ":24px;width:380px;max-width:calc(100vw - 32px);"
-    + "height:560px;max-height:calc(100vh - 120px);background:var(--wah-bg);border-radius:16px;"
+    + "#chathelper-panel{position:fixed;bottom:96px;" + SIDE + ":24px;width:380px;max-width:calc(100vw - 32px);"
+    + "height:560px;max-height:calc(100vh - 120px);background:var(--chathelper-bg);border-radius:16px;"
     + "box-shadow:0 12px 40px rgba(0,0,0,.28);display:none;flex-direction:column;overflow:hidden;"
-    + "z-index:999999;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:var(--wah-fg);}"
-    + "#wah-panel.open{display:flex;}"
-    + "#wah-panel .wah-hdr{background:var(--wah-accent);color:#fff;padding:14px 16px;font-weight:600;}"
-    + "#wah-panel .wah-hdr small{display:block;font-weight:400;opacity:.85;font-size:12px;}"
-    + "#wah-panel .wah-msgs{flex:1;overflow-y:auto;padding:16px;background:var(--wah-panel);}"
-    + "#wah-panel .wah-msg{margin-bottom:14px;display:flex;}"
-    + "#wah-panel .wah-msg .wah-bubble{padding:10px 13px;border-radius:14px;max-width:82%;"
+    + "z-index:999999;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:var(--chathelper-fg);}"
+    + "#chathelper-panel.open{display:flex;}"
+    + "#chathelper-panel .chathelper-hdr{background:var(--chathelper-accent);color:#fff;padding:14px 16px;font-weight:600;}"
+    + "#chathelper-panel .chathelper-hdr small{display:block;font-weight:400;opacity:.85;font-size:12px;}"
+    + "#chathelper-panel .chathelper-msgs{flex:1;overflow-y:auto;padding:16px;background:var(--chathelper-panel);}"
+    + "#chathelper-panel .chathelper-msg{margin-bottom:14px;display:flex;}"
+    + "#chathelper-panel .chathelper-msg .chathelper-bubble{padding:10px 13px;border-radius:14px;max-width:82%;"
     + "line-height:1.45;white-space:pre-wrap;word-wrap:break-word;}"
-    + "#wah-panel .wah-msg.user{justify-content:flex-end;}"
-    + "#wah-panel .wah-msg.user .wah-bubble{background:var(--wah-accent);color:#fff;border-bottom-right-radius:4px;}"
-    + "#wah-panel .wah-msg.bot .wah-bubble{background:#fff;border:1px solid #e5e7eb;border-bottom-left-radius:4px;}"
-    + "#wah-panel .wah-msg.bot .wah-bubble a{color:var(--wah-accent);text-decoration:underline;word-break:break-all;}"
-    + "#wah-panel .wah-sources{font-size:11px;color:var(--wah-muted);margin-top:6px;}"
-    + "#wah-panel .wah-sources a{color:var(--wah-accent);text-decoration:none;}"
-    + "#wah-panel .wah-composer{display:flex;border-top:1px solid #e5e7eb;padding:10px;gap:8px;background:#fff;}"
-    + "#wah-panel .wah-composer input{flex:1;border:1px solid #d1d5db;border-radius:10px;padding:10px 12px;"
+    + "#chathelper-panel .chathelper-msg.user{justify-content:flex-end;}"
+    + "#chathelper-panel .chathelper-msg.user .chathelper-bubble{background:var(--chathelper-accent);color:#fff;border-bottom-right-radius:4px;}"
+    + "#chathelper-panel .chathelper-msg.bot .chathelper-bubble{background:#fff;border:1px solid #e5e7eb;border-bottom-left-radius:4px;}"
+    + "#chathelper-panel .chathelper-msg.bot .chathelper-bubble a{color:var(--chathelper-accent);text-decoration:underline;word-break:break-all;}"
+    + "#chathelper-panel .chathelper-sources{font-size:11px;color:var(--chathelper-muted);margin-top:6px;}"
+    + "#chathelper-panel .chathelper-sources a{color:var(--chathelper-accent);text-decoration:none;}"
+    + "#chathelper-panel .chathelper-composer{display:flex;border-top:1px solid #e5e7eb;padding:10px;gap:8px;background:#fff;}"
+    + "#chathelper-panel .chathelper-composer input{flex:1;border:1px solid #d1d5db;border-radius:10px;padding:10px 12px;"
     + "font-size:14px;outline:none;}"
-    + "#wah-panel .wah-composer button{background:var(--wah-accent);color:#fff;border:none;border-radius:10px;"
+    + "#chathelper-panel .chathelper-composer button{background:var(--chathelper-accent);color:#fff;border:none;border-radius:10px;"
     + "padding:0 16px;cursor:pointer;font-size:14px;}"
-    + "#wah-panel .wah-composer button:disabled{opacity:.5;cursor:default;}";
+    + "#chathelper-panel .chathelper-composer button:disabled{opacity:.5;cursor:default;}";
   var styleEl = document.createElement("style");
   styleEl.textContent = css;
   document.head.appendChild(styleEl);
@@ -106,16 +106,16 @@
   document.head.appendChild(linkEl);
 
   var toggle = document.createElement("button");
-  toggle.id = "wah-toggle";
+  toggle.id = "chathelper-toggle";
   toggle.title = "Chat";
   toggle.textContent = "💬"; // 💬
 
   var panel = document.createElement("div");
-  panel.id = "wah-panel";
+  panel.id = "chathelper-panel";
   panel.innerHTML =
-    '<div class="wah-hdr">' + t.title + '<small>' + t.subtitle + '</small></div>'
-    + '<div class="wah-msgs"></div>'
-    + '<form class="wah-composer">'
+    '<div class="chathelper-hdr">' + t.title + '<small>' + t.subtitle + '</small></div>'
+    + '<div class="chathelper-msgs"></div>'
+    + '<form class="chathelper-composer">'
     + '<input autocomplete="off" placeholder="' + t.placeholder + '" />'
     + '<button type="submit">' + t.send + '</button>'
     + '</form>';
@@ -124,8 +124,8 @@
   document.body.appendChild(panel);
 
   var els = {
-    msgs: panel.querySelector(".wah-msgs"),
-    form: panel.querySelector(".wah-composer"),
+    msgs: panel.querySelector(".chathelper-msgs"),
+    form: panel.querySelector(".chathelper-composer"),
     input: panel.querySelector("input"),
     send: panel.querySelector("button"),
   };
@@ -139,7 +139,7 @@
     .then(function (overrides) {
       if (!overrides || typeof overrides !== "object") return;
       Object.assign(t, overrides);
-      var hdr = panel.querySelector(".wah-hdr");
+      var hdr = panel.querySelector(".chathelper-hdr");
       if (overrides.title) hdr.childNodes[0].nodeValue = t.title;
       if (overrides.subtitle) hdr.querySelector("small").textContent = t.subtitle;
       if (overrides.placeholder) els.input.placeholder = t.placeholder;
@@ -161,9 +161,9 @@
 
   function addMsg(role, text) {
     var wrap = document.createElement("div");
-    wrap.className = "wah-msg " + role;
+    wrap.className = "chathelper-msg " + role;
     var bubble = document.createElement("div");
-    bubble.className = "wah-bubble";
+    bubble.className = "chathelper-bubble";
     bubble.textContent = text;
     wrap.appendChild(bubble);
     els.msgs.appendChild(wrap);
@@ -221,7 +221,7 @@
     });
     if (!valid.length) return;
     var div = document.createElement("div");
-    div.className = "wah-sources";
+    div.className = "chathelper-sources";
     div.appendChild(document.createTextNode("Sources: "));
     valid.forEach(function (s, index) {
       if (index) div.appendChild(document.createTextNode(" "));

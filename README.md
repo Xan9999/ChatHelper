@@ -49,9 +49,7 @@ cd ChatHelper
 ```
 
 The CLI command, the pip package, and the Python import package are all named
-`chathelper`. The project was previously called Website-AI-helper; the old
-GitHub URL redirects here, and the widget's `wah-` CSS prefix is kept so
-existing per-site stylesheets continue to work.
+`chathelper`.
 
 For a local run, create `.env` with `chathelper init`, then set at least:
 
