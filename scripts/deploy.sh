@@ -73,6 +73,12 @@ validate() {
     #   local-llm   chat from the GPU llama.cpp container (needs NVIDIA toolkit)
     local profiles models_dir chat_model embed_model llm_url
     profiles=",$(env_value COMPOSE_PROFILES),"
+    # Export the profile list so Compose honours it regardless of how it
+    # treats COMPOSE_* variables inside an --env-file.
+    if [[ "$profiles" != ",," ]]; then
+        export COMPOSE_PROFILES="${profiles#,}"
+        export COMPOSE_PROFILES="${COMPOSE_PROFILES%,}"
+    fi
     models_dir="$(env_value MODELS_DIR)"
     llm_url="$(env_value LLM_BASE_URL)"
     if [[ "$profiles" == *,local-llm,* ]]; then
