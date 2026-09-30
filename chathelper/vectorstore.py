@@ -15,6 +15,7 @@ ingest, see README) to upgrade it to hybrid.
 """
 from __future__ import annotations
 
+import time
 import uuid
 
 from qdrant_client import QdrantClient
@@ -30,20 +31,29 @@ from qdrant_client.models import (
     VectorParams,
 )
 
-from website_ai_helper import config
-from website_ai_helper.lexical import sparse_encode
+from chathelper import config
+from chathelper.lexical import sparse_encode
 
 _client: QdrantClient | None = None
 
 # collection name -> "hybrid" | "legacy", resolved once per process.
 _modes: dict[str, str] = {}
 
+# collection name -> (exists, checked_at). Visitors pick the collection via
+# the widget's client_id, so existence is checked per request; cache it so a
+# burst of requests (or a flood of made-up ids) is not one Qdrant call each.
+_known: dict[str, tuple[bool, float]] = {}
+_KNOWN_TTL_S = {True: 300.0, False: 15.0}
+
 
 def get_client() -> QdrantClient:
     global _client
     if _client is None:
         if config.QDRANT_URL:
-            _client = QdrantClient(url=config.QDRANT_URL)
+            _client = QdrantClient(
+                url=config.QDRANT_URL,
+                api_key=config.QDRANT_API_KEY or None,
+            )
         else:
             config.ensure_data_dir()
             try:
@@ -53,7 +63,7 @@ def get_client() -> QdrantClient:
                     raise
                 raise SystemExit(
                     f"Cannot open the vector store at '{config.QDRANT_PATH}' — it's "
-                    "already open in another process (e.g. `website-ai-helper serve` "
+                    "already open in another process (e.g. `chathelper serve` "
                     "is running). Embedded Qdrant only allows ONE process at a time.\n"
                     "Fix: stop that process first, then retry — or avoid this "
                     "entirely by running a real Qdrant server and setting QDRANT_URL "
@@ -65,17 +75,54 @@ def get_client() -> QdrantClient:
 
 def ensure_collection(client: QdrantClient, name: str | None = None) -> None:
     name = name or config.QDRANT_COLLECTION
-    existing = {c.name for c in client.get_collections().collections}
-    if name not in existing:
-        client.create_collection(
-            collection_name=name,
-            vectors_config={"dense": VectorParams(size=config.EMBED_DIM,
-                                                  distance=Distance.COSINE)},
-            # IDF weighting is computed by Qdrant over the live collection, so
-            # the client only stores raw term frequencies (see lexical.py).
-            sparse_vectors_config={"lexical": SparseVectorParams(modifier=Modifier.IDF)},
-        )
+    if not client.collection_exists(name):
+        # Several ASGI workers may start at once. Treat a concurrent create by
+        # another worker as success, but surface every other failure.
+        try:
+            client.create_collection(
+                collection_name=name,
+                vectors_config={"dense": VectorParams(size=config.EMBED_DIM,
+                                                      distance=Distance.COSINE)},
+                sparse_vectors_config={
+                    "lexical": SparseVectorParams(modifier=Modifier.IDF)
+                },
+            )
+        except Exception:
+            if not client.collection_exists(name):
+                raise
         _modes[name] = "hybrid"
+
+
+def collection_known(client: QdrantClient, name: str) -> bool:
+    """True if the collection exists. Unlike ensure_collection() this never
+    creates anything: a request naming an unknown client_id must NOT be able
+    to create collections (each costs Qdrant storage and would show up in
+    the QA site), so the serving path uses this and only ingest creates."""
+    now = time.monotonic()
+    cached = _known.get(name)
+    if cached is not None and now - cached[1] < _KNOWN_TTL_S[cached[0]]:
+        return cached[0]
+    exists = bool(client.collection_exists(name))
+    _known[name] = (exists, now)
+    return exists
+
+
+def recreate_collection(client: QdrantClient, name: str | None = None) -> None:
+    """Drop a collection (if present) and create it fresh in the current
+    hybrid schema. Used by `chathelper ingest --replace` so a full re-crawl
+    never leaves stale or duplicate chunks behind."""
+    name = name or config.QDRANT_COLLECTION
+    if client.collection_exists(name):
+        client.delete_collection(name)
+    _modes.pop(name, None)
+    _known.pop(name, None)
+    ensure_collection(client, name)
+
+
+def point_id(url: str, index: int) -> str:
+    """Deterministic point id for chunk `index` of a page: re-ingesting the
+    same page overwrites its chunks in place instead of duplicating them."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{url}#chunk={index}"))
 
 
 def _mode(client: QdrantClient, name: str) -> str:
@@ -88,20 +135,24 @@ def _mode(client: QdrantClient, name: str) -> str:
 
 
 def upsert(client: QdrantClient, vectors: list[list[float]], payloads: list[dict],
-           name: str | None = None) -> None:
+           name: str | None = None, ids: list[str] | None = None) -> None:
+    """Store chunks. Pass `ids` (see point_id) to make the write idempotent;
+    without them every point gets a random id, which duplicates on re-ingest."""
     name = name or config.QDRANT_COLLECTION
     hybrid = _mode(client, name) == "hybrid"
+    if ids is None:
+        ids = [str(uuid.uuid4()) for _ in vectors]
 
-    def point(v: list[float], p: dict) -> PointStruct:
+    def point(pid: str, v: list[float], p: dict) -> PointStruct:
         if hybrid:
             idx, vals = sparse_encode(p.get("text", ""))
             vector = {"dense": v, "lexical": SparseVector(indices=idx, values=vals)}
         else:
             vector = v  # legacy collection: keep writing its original schema
-        return PointStruct(id=str(uuid.uuid4()), vector=vector, payload=p)
+        return PointStruct(id=pid, vector=vector, payload=p)
 
     client.upsert(collection_name=name,
-                  points=[point(v, p) for v, p in zip(vectors, payloads)])
+                  points=[point(i, v, p) for i, v, p in zip(ids, vectors, payloads)])
 
 
 def search(client: QdrantClient, query_vector: list[float], top_k: int,

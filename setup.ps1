@@ -7,6 +7,6 @@ python -m venv .venv
 Write-Host ""
 Write-Host "Installed. Next:" -ForegroundColor Green
 Write-Host "  .\.venv\Scripts\Activate.ps1"
-Write-Host "  website-ai-helper init"
-Write-Host "  website-ai-helper ingest https://your-site.com --collection mysite"
-Write-Host "  website-ai-helper serve --collection mysite"
+Write-Host "  chathelper init"
+Write-Host "  chathelper ingest https://your-site.com --collection mysite"
+Write-Host "  chathelper serve --collection mysite"

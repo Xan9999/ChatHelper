@@ -1,4 +1,4 @@
-/* Website AI Helper — self-injecting chat widget.
+/* ChatHelper — self-injecting chat widget.
  * Loaded via a single async <script> tag (see README "Embedding the widget"):
  *   <script>
  *   !function(d,u,i,l,p,a){
@@ -8,7 +8,7 @@
  *   }(document,"https://your-backend/widget.js","your-client-id","en");
  *   </script>
  * client_id selects which site's knowledge base to use (it's the Qdrant
- * collection name from `website-ai-helper ingest --collection <client_id>`).
+ * collection name from `chathelper ingest --collection <client_id>`).
  * language only picks the widget's UI strings below — the assistant itself
  * already answers in whatever language the visitor types in.
  *
@@ -37,6 +37,9 @@
 (function () {
   "use strict";
 
+  // The "wah-" id/class/variable prefix dates from the project's former name
+  // (Website AI Helper). It is a public styling hook used by per-site CSS
+  // overrides (widget_styles/*.css), so it deliberately stays unchanged.
   var thisScript = document.currentScript ||
     (function () { var s = document.getElementsByTagName("script"); return s[s.length - 1]; })();
   var scriptUrl = new URL(thisScript.src, window.location.href);
@@ -147,8 +150,12 @@
     .catch(function () {}); // no override file / network hiccup -> keep defaults
 
   var history = [];
-  var conversationId = (crypto.randomUUID && crypto.randomUUID())
-    || (Date.now().toString(36) + Math.random().toString(36).slice(2));
+  var conversationId = window.crypto && window.crypto.randomUUID
+    ? window.crypto.randomUUID()
+    : "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function (c) {
+        var r = Math.floor(Math.random() * 16);
+        return (c === "x" ? r : (r & 3 | 8)).toString(16);
+      });
 
   toggle.onclick = function () { panel.classList.toggle("open"); };
 
@@ -203,13 +210,28 @@
   }
 
   function renderSources(bubble, sources) {
-    var valid = (sources || []).filter(function (s) { return s.url; });
+    var valid = (sources || []).filter(function (s) {
+      if (!s || typeof s.url !== "string") return false;
+      try {
+        var parsed = new URL(s.url);
+        return parsed.protocol === "http:" || parsed.protocol === "https:";
+      } catch (_) {
+        return false;
+      }
+    });
     if (!valid.length) return;
     var div = document.createElement("div");
     div.className = "wah-sources";
-    div.innerHTML = "Sources: " + valid.map(function (s) {
-      return '<a href="' + s.url + '" target="_blank" rel="noopener">[' + s.n + ']</a>';
-    }).join(" ");
+    div.appendChild(document.createTextNode("Sources: "));
+    valid.forEach(function (s, index) {
+      if (index) div.appendChild(document.createTextNode(" "));
+      var link = document.createElement("a");
+      link.href = s.url;
+      link.target = "_blank";
+      link.rel = "noopener";
+      link.textContent = "[" + String(s.n) + "]";
+      div.appendChild(link);
+    });
     bubble.parentElement.appendChild(div);
   }
 
@@ -232,6 +254,11 @@
         conversation_id: conversationId, client_id: CLIENT_ID,
       }),
     }).then(function (resp) {
+      if (!resp.ok) {
+        return resp.json().catch(function () { return {}; }).then(function (data) {
+          throw new Error(data.detail || t.unreachable);
+        });
+      }
       var reader = resp.body.getReader();
       var decoder = new TextDecoder();
       var buffer = "";
@@ -257,8 +284,8 @@
     }).then(function () {
       history.push({ role: "user", content: message });
       history.push({ role: "assistant", content: answer });
-    }).catch(function () {
-      bubble.textContent = t.unreachable;
+    }).catch(function (error) {
+      bubble.textContent = error.message || t.unreachable;
     }).finally(function () {
       els.send.disabled = false;
       els.input.focus();

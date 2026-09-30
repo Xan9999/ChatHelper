@@ -8,6 +8,6 @@ python3 -m venv .venv
 echo
 echo "Installed. Next:"
 echo "  source .venv/bin/activate"
-echo "  website-ai-helper init"
-echo "  website-ai-helper ingest https://your-site.com --collection mysite"
-echo "  website-ai-helper serve --collection mysite"
+echo "  chathelper init"
+echo "  chathelper ingest https://your-site.com --collection mysite"
+echo "  chathelper serve --collection mysite"

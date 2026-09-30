@@ -1,0 +1,44 @@
+{
+    admin off
+    email {$ACME_EMAIL}
+}
+
+{$CHAT_DOMAIN} {
+    # Compress ordinary responses only. The chat reply is text/event-stream
+    # and must reach the browser token by token; keeping it out of the
+    # encoder removes any chance of the compressor buffering small writes.
+    encode zstd gzip {
+        match {
+            header Content-Type text/html*
+            header Content-Type text/css*
+            header Content-Type text/plain*
+            header Content-Type application/json*
+            header Content-Type application/javascript*
+        }
+    }
+
+    request_body {
+        max_size 1MB
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        Content-Security-Policy "default-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+        -Server
+    }
+
+    reverse_proxy app:8000 {
+        health_uri /ready
+        health_interval 30s
+        health_timeout 5s
+    }
+
+    log {
+        output stdout
+        format json
+    }
+}

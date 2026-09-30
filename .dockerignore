@@ -1,9 +1,31 @@
+# NOTE: unlike .gitignore, a bare pattern here matches only at the context
+# root. "**/" is required for anything that may appear in a subfolder —
+# otherwise chathelper/__pycache__ or a stray chathelper/data/
+# (created by running the CLI from inside the package) ends up in the image.
 .venv/
-data/
+**/data/
+**/*.db
+**/*.sqlite*
 models/
-*.gguf
+**/*.gguf
 .env
+.env.*
+!.env.example
+secrets/
+backups/
 .git/
-__pycache__/
-*.pyc
+.gitignore
+**/__pycache__
+**/*.pyc
+**/*.pyo
 qdrant/
+snapshots/
+**/*.egg-info
+tests/
+.vscode/
+*.md
+!README.md
+.qdrant-initialized
+docker-compose.yml
+Dockerfile
+.dockerignore

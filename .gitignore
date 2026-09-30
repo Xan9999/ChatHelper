@@ -10,11 +10,17 @@ venv/
 
 # Runtime data & models (never commit — can be many GB)
 data/
+snapshots/
 models/
 *.gguf
 
 # Secrets / local config
 .env
+.env.production
+secrets/
+
+# Operator-created backups
+backups/
 
 # Private internal docs
 ARCHITECTURE.md

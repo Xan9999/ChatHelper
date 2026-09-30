@@ -1,23 +1,87 @@
 """Ingestion: crawl a website, chunk the text, embed it, store it in Qdrant.
 
-Programmatic entry point is `crawl_and_ingest(url)`. The CLI (`website-ai-helper
+Programmatic entry point is `crawl_and_ingest(url)`. The CLI (`chathelper
 ingest <url>`) calls it. To also ingest free text from another database, shape
 rows as {"text","url","title"} and pass them to `ingest_pages(...)`.
 """
 from __future__ import annotations
 
-import time
+import uuid
 from collections import deque
 from contextlib import contextmanager
-from urllib.parse import urldefrag, urljoin, urlparse
+from urllib.parse import parse_qsl, urldefrag, urljoin, urlparse, urlunparse
 
 import requests
 from bs4 import BeautifulSoup
 
-from website_ai_helper import config, vectorstore
-from website_ai_helper.llm import embed_texts
+from chathelper import config, vectorstore
+from chathelper.llm import embed_texts
 
-_HEADERS = {"User-Agent": "website-ai-helper-ingest/1.0"}
+_HEADERS = {"User-Agent": "chathelper-ingest/1.0"}
+
+# Links that can never be a page worth reading (PDFs are handled separately).
+# Skipping them by extension saves one HTTP round-trip each; on a shop site
+# images and downloads easily outnumber the actual pages.
+_SKIP_EXTENSIONS = (
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif", ".svg", ".ico", ".bmp",
+    ".css", ".js", ".mjs", ".json", ".xml", ".rss", ".atom",
+    ".zip", ".rar", ".7z", ".gz", ".tgz", ".tar", ".exe", ".dmg", ".msi",
+    ".mp3", ".mp4", ".m4a", ".avi", ".mov", ".webm", ".ogg", ".wav",
+    ".woff", ".woff2", ".ttf", ".otf", ".eot",
+    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods",
+)
+# Query parameters that never change the page content. Left in, the same
+# product page reached through share/campaign links is crawled once per
+# variant and eats the page budget.
+_TRACKING_PARAMS = {
+    "fbclid", "gclid", "dclid", "msclkid", "mc_cid", "mc_eid", "yclid",
+    "igshid", "_ga", "_gl",
+}
+
+
+def _normalize_url(url: str) -> str:
+    """Canonical URL for de-duplication: no fragment, lowercase scheme and
+    host, '/' path for a bare host, tracking parameters removed. The query
+    string is left byte-for-byte intact when nothing needs removing."""
+    url = urldefrag(url.strip())[0]
+    parts = urlparse(url)
+    if parts.scheme not in ("http", "https"):
+        return url
+    query = parts.query
+    if query:
+        kept = [
+            (k, v) for k, v in parse_qsl(query, keep_blank_values=True)
+            if not (k.lower().startswith("utm_") or k.lower() in _TRACKING_PARAMS)
+        ]
+        if len(kept) != len(parse_qsl(query, keep_blank_values=True)):
+            query = "&".join(f"{k}={v}" if v else k for k, v in kept)
+    return urlunparse((parts.scheme.lower(), parts.netloc.lower(),
+                       parts.path or "/", parts.params, query, ""))
+
+
+def _site_key(url: str) -> str:
+    """Host used for the same-site rule; 'www.' is ignored so a site that
+    links to itself both with and without it is still crawled as one."""
+    host = urlparse(url).netloc.lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def _skippable(url: str) -> bool:
+    return urlparse(url).path.lower().endswith(_SKIP_EXTENSIONS)
+
+
+def _read_capped(resp: requests.Response, limit: int) -> bytes | None:
+    """Read a streamed response body, giving up (None) once it exceeds
+    `limit` bytes — a huge or mislabelled file is never held in memory."""
+    declared = resp.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > limit:
+        return None
+    buf = bytearray()
+    for chunk in resp.iter_content(chunk_size=256 * 1024):
+        buf.extend(chunk)
+        if len(buf) > limit:
+            return None
+    return bytes(buf)
 
 
 def _extract_text_title(soup: BeautifulSoup) -> tuple[str, str]:
@@ -55,18 +119,20 @@ def _fetch_pdf_page(url: str) -> dict | None:
 
     import io
 
+    limit = config.CRAWL_PDF_MAX_MB * 1024 * 1024
     try:
-        resp = requests.get(url, headers=_HEADERS, timeout=30)
-        resp.raise_for_status()
+        with requests.get(url, headers=_HEADERS, timeout=30, stream=True) as resp:
+            resp.raise_for_status()
+            data = _read_capped(resp, limit)
     except requests.RequestException as exc:
         print(f"  skip {url}: {exc}")
         return None
-    if len(resp.content) > config.CRAWL_PDF_MAX_MB * 1024 * 1024:
+    if data is None:
         print(f"  skip {url}: PDF larger than {config.CRAWL_PDF_MAX_MB} MB")
         return None
 
     try:
-        reader = PdfReader(io.BytesIO(resp.content))
+        reader = PdfReader(io.BytesIO(data))
         text = "\n".join(filter(None, (pg.extract_text() for pg in reader.pages)))
     except Exception as exc:  # pypdf raises many exception types on bad files
         print(f"  skip {url}: unreadable PDF ({exc})")
@@ -147,16 +213,23 @@ def _static_fetcher():
     every page — roughly 2x faster per page after the first on real sites."""
     with requests.Session() as session:
         session.headers.update(_HEADERS)
+        limit = config.CRAWL_MAX_PAGE_MB * 1024 * 1024
 
-        def fetch(url: str) -> str | None:
+        def fetch(url: str) -> bytes | None:
+            # Returns raw bytes: BeautifulSoup detects the charset itself
+            # (meta tag / BOM), which beats requests' ISO-8859-1 fallback
+            # for pages that omit a charset header.
             try:
-                resp = session.get(url, timeout=15)
+                with session.get(url, timeout=15, stream=True) as resp:
+                    if "text/html" not in resp.headers.get("content-type", ""):
+                        return None
+                    data = _read_capped(resp, limit)
             except requests.RequestException as exc:
                 print(f"  skip {url}: {exc}")
                 return None
-            if "text/html" not in resp.headers.get("content-type", ""):
-                return None
-            return resp.text
+            if data is None:
+                print(f"  skip {url}: page larger than {config.CRAWL_MAX_PAGE_MB} MB")
+            return data
 
         yield fetch
 
@@ -168,7 +241,7 @@ def _rendered_fetcher():
     Runs each page's JavaScript and waits for it to settle, so client-rendered
     (single-page-app) content and JS-built links are captured. Requires the
     optional Playwright dependency:
-        pip install "website-ai-helper[render]"
+        pip install "chathelper[render]"
         playwright install chromium
     """
     try:
@@ -181,7 +254,7 @@ def _rendered_fetcher():
     except ImportError as exc:
         raise SystemExit(
             "Rendered crawling needs Playwright. Install it with:\n"
-            '  pip install "website-ai-helper[render]"\n'
+            '  pip install "chathelper[render]"\n'
             "  playwright install chromium"
         ) from exc
 
@@ -222,14 +295,16 @@ def _rendered_fetcher():
 
 
 def _bfs_crawl(start_url: str, max_pages: int, same_domain: bool, fetch) -> list[dict]:
-    """Breadth-first crawl using the given `fetch(url)->html|None` function."""
+    """Breadth-first crawl using the given `fetch(url)->html|None` function
+    (html may be str or bytes; BeautifulSoup accepts both)."""
+    start_url = _normalize_url(start_url)
     seen: set[str] = set()
     queue: deque[str] = deque([start_url])
-    domain = urlparse(start_url).netloc
+    site = _site_key(start_url)
     pages: list[dict] = []
 
     while queue and len(pages) < max_pages:
-        url = urldefrag(queue.popleft())[0]
+        url = queue.popleft()
         if url in seen:
             continue
         seen.add(url)
@@ -252,10 +327,12 @@ def _bfs_crawl(start_url: str, max_pages: int, same_domain: bool, fetch) -> list
         # those tags out (it mutates `soup` in place).
         soup = BeautifulSoup(html, "html.parser")
         for a in soup.find_all("a", href=True):
-            nxt = urldefrag(urljoin(url, a["href"]))[0]
-            if not nxt.startswith("http"):
+            nxt = _normalize_url(urljoin(url, a["href"]))
+            if not nxt.startswith(("http://", "https://")):
                 continue
-            if same_domain and urlparse(nxt).netloc != domain:
+            if same_domain and _site_key(nxt) != site:
+                continue
+            if _skippable(nxt):
                 continue
             if nxt not in seen:
                 queue.append(nxt)
@@ -289,29 +366,43 @@ def ingest_pages(pages: list[dict], batch_size: int = 32) -> int:
 
     texts: list[str] = []
     payloads: list[dict] = []
+    ids: list[str] = []
     total = 0
 
     def flush() -> None:
-        nonlocal total, texts, payloads
+        nonlocal total, texts, payloads, ids
         if not texts:
             return
         vectors = embed_texts(texts, kind="document")
-        vectorstore.upsert(client, vectors, payloads)
+        vectorstore.upsert(client, vectors, payloads, ids=ids)
         total += len(texts)
         print(f"  ...stored {total} chunks")
-        texts, payloads = [], []
+        texts, payloads, ids = [], [], []
 
     for pg in pages:
-        for chunk in chunk_text(pg["text"], config.CHUNK_SIZE, config.CHUNK_OVERLAP):
+        url = pg.get("url", "")
+        for index, chunk in enumerate(
+            chunk_text(pg["text"], config.CHUNK_SIZE, config.CHUNK_OVERLAP)
+        ):
             texts.append(chunk)
-            payloads.append({"text": chunk, "url": pg.get("url", ""), "title": pg.get("title", "")})
+            payloads.append({"text": chunk, "url": url, "title": pg.get("title", "")})
+            # Deterministic per (url, chunk index): re-ingesting a page
+            # overwrites its chunks instead of adding duplicates. Rows
+            # without a URL cannot be identified, so they get random ids.
+            ids.append(vectorstore.point_id(url, index) if url else str(uuid.uuid4()))
             if len(texts) >= batch_size:
                 flush()
     flush()
     return total
 
 
-def crawl_and_ingest(url: str, render: bool | None = None) -> int:
+def crawl_and_ingest(url: str, render: bool | None = None, replace: bool = False) -> int:
+    """Crawl `url` and store it in the configured collection.
+
+    replace=True drops the collection and recreates it right before storing
+    (never before the crawl, so a failed crawl cannot destroy existing
+    data). Without it, chunks of re-crawled pages are overwritten in place
+    but pages that vanished from the site keep their old chunks."""
     render = config.CRAWL_RENDER if render is None else render
     config.ensure_data_dir()
 
@@ -319,7 +410,7 @@ def crawl_and_ingest(url: str, render: bool | None = None) -> int:
     # embedding server BEFORE crawling — a long crawl finishing only to fail
     # at the embed/store step wastes real time (a 176-page crawl once died
     # exactly this way because only Qdrant was checked).
-    vectorstore.get_client()
+    client = vectorstore.get_client()
     try:
         embed_texts(["connectivity check"])
     except Exception as exc:
@@ -335,6 +426,14 @@ def crawl_and_ingest(url: str, render: bool | None = None) -> int:
     pages = crawl(url, config.CRAWL_MAX_PAGES, config.CRAWL_SAME_DOMAIN, render=render)
     if config.BOILERPLATE_STRIP:
         pages = strip_boilerplate(pages)
+    if replace:
+        if not pages:
+            raise SystemExit(
+                "Crawl produced no pages — keeping the existing collection "
+                f"'{config.QDRANT_COLLECTION}' instead of replacing it with nothing."
+            )
+        print(f"Replacing collection '{config.QDRANT_COLLECTION}' (dropping old chunks)...")
+        vectorstore.recreate_collection(client)
     print(f"Crawled {len(pages)} pages. Embedding + storing...")
     total = ingest_pages(pages)
     print(f"Done. Ingested {total} chunks into '{config.QDRANT_COLLECTION}'.")
@@ -344,7 +443,7 @@ def crawl_and_ingest(url: str, render: bool | None = None) -> int:
 def main() -> None:
     import sys
     if len(sys.argv) < 2:
-        print("Usage: python -m website_ai_helper.ingest <start_url>")
+        print("Usage: python -m chathelper.ingest <start_url>")
         raise SystemExit(1)
     crawl_and_ingest(sys.argv[1])
 

@@ -3,11 +3,11 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "website-ai-helper"
+name = "chathelper"
 version = "0.1.0"
-description = "A portable, local RAG chatbot that answers from any website's content plus your database, powered by any OpenAI-compatible LLM (e.g. llama.cpp)."
+description = "A production-ready website RAG chatbot powered by an OpenAI-compatible LLM, Qdrant, and PostgreSQL."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Xander" }]
 keywords = ["rag", "chatbot", "llama.cpp", "embeddings", "qdrant", "website assistant"]
@@ -20,18 +20,27 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "python-dotenv>=1.0",
     "pypdf>=4.0",
+    "psycopg[binary]>=3.2,<4",
+    "psycopg-pool>=3.2,<4",
 ]
 
 [project.optional-dependencies]
 # Rendered crawling of JavaScript/SPA sites. After installing, run:
 #   playwright install chromium
 render = ["playwright>=1.40"]
+# Test-suite dependencies:  pip install -e ".[dev]"  then  python -m unittest discover -s tests
+dev = ["pyyaml>=6.0", "httpx>=0.27"]
+
+[project.urls]
+Homepage = "https://github.com/Xan9999/ChatHelper"
+Repository = "https://github.com/Xan9999/ChatHelper"
+Issues = "https://github.com/Xan9999/ChatHelper/issues"
 
 [project.scripts]
-website-ai-helper = "website_ai_helper.cli:main"
+chathelper = "chathelper.cli:main"
 
 [tool.setuptools]
-packages = ["website_ai_helper"]
+packages = ["chathelper"]
 
 [tool.setuptools.package-data]
-website_ai_helper = ["web/*.html", "web/*.js"]
+chathelper = ["web/*.js"]

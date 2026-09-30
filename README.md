@@ -1,859 +1,229 @@
-# Website-AI-helper
+# ChatHelper
 
-A portable, **fully local** RAG chatbot you can drop onto **any website**. It
-answers using **hybrid retrieval**:
+ChatHelper is a website chat assistant that crawls public pages, indexes them
+in Qdrant, and answers questions using an OpenAI-compatible chat model. The
+widget also sends the visitor's current page as context. PostgreSQL stores
+conversation logs for the private QA review page. There is no product, order,
+or live-commerce database integration.
 
-- **Vector RAG** over the site's crawled content + your documents
-- **Live database** lookups via safe, read-only tools (price, stock, orders…)
-- **Current-page context** passed live from the chat widget
+The supported production deployment is a Linux VPS with Docker Compose. See
+[DEPLOYMENT.md](DEPLOYMENT.md) for the step-by-step VPS guide, host prerequisites,
+secrets, backups, upgrades, and recovery. Nothing in this repository has been
+deployed to a server for you.
 
-It talks to any **OpenAI-compatible** LLM + embedding server, so it runs on
-[llama.cpp](https://github.com/ggml-org/llama.cpp), Ollama, or a remote API —
-your data and models never have to leave your machine.
+## Architecture
 
-## Why it's reusable
+```text
+visitor's browser → Caddy (public HTTPS) → ChatHelper / Uvicorn
+                                           ├─ Qdrant (website knowledge)
+                                           ├─ PostgreSQL (conversation logs)
+                                           ├─ llama.cpp chat server
+                                           └─ llama.cpp embedding server
+```
 
-One install can serve **many sites**: give each website its own **collection**.
+Only Caddy publishes host ports (80 and 443). The app and its data/model
+services are private to Docker networks. Caddy handles TLS certificates,
+security headers, request-size limits, and streaming proxying; it is the
+reverse proxy in front of the FastAPI app, not a replacement for FastAPI.
+PostgreSQL and Qdrant have separate persistent Docker volumes, so rebuilding
+or replacing the app container does not erase either database. Back up both
+volumes' *contents* regularly; a volume by itself is not a backup.
+
+Two Uvicorn workers are configured by default. Each worker has a PostgreSQL
+connection pool; `APP_WORKERS × DB_POOL_MAX_SIZE` is the approximate maximum
+connection count. `LLM_SLOTS` independently limits simultaneous model
+generations. More HTTP workers cannot make a GPU model generate more answers
+than its available slots.
+
+## Install from Git for local development
+
+Requirements: Python 3.10+, PostgreSQL, an OpenAI-compatible chat endpoint,
+an embedding endpoint, and Qdrant (either a server or embedded mode for a
+single-process local test). The production stack supplies all of these.
 
 ```bash
-website-ai-helper ingest https://acme.com   --collection acme
-website-ai-helper ingest https://globex.com --collection globex
-
-website-ai-helper serve --collection acme   --port 8000
-website-ai-helper serve --collection globex --port 8001
+git clone https://github.com/Xan9999/ChatHelper.git
+cd ChatHelper
+./setup.sh                 # macOS/Linux
+# or: .\setup.ps1          # Windows PowerShell
 ```
 
-## Install
+The CLI command, the pip package, and the Python import package are all named
+`chathelper`. The project was previously called Website-AI-helper; the old
+GitHub URL redirects here, and the widget's `wah-` CSS prefix is kept so
+existing per-site stylesheets continue to work.
 
-Requires Python 3.9+ and an OpenAI-compatible chat + embedding endpoint.
+For a local run, create `.env` with `chathelper init`, then set at least:
 
-```bash
-# clone, then:
-./setup.sh          # macOS/Linux
-# or on Windows:
-.\setup.ps1
-```
-
-That creates a virtualenv and installs the `website-ai-helper` command. (Under
-the hood it's just `pip install -e .` — you can also `pipx install .` for a
-global command.)
-
-## Quickstart
-
-```bash
-website-ai-helper init                                   # writes a starter .env
-website-ai-helper ingest https://example.com --collection demo
-website-ai-helper serve --collection demo
-# open http://127.0.0.1:8000  and click the chat button
-```
-
-### Bring your own models (llama.cpp example)
-
-Any OpenAI-compatible server works; point `.env` at it. `llama.cpp` is a
-separate project (not bundled with this package) that provides `llama-server`
-— a binary that loads a `.gguf` model and exposes it over an OpenAI-compatible
-API + web UI.
-
-**Getting `llama-server`:**
-- **Prebuilt (easiest):** download the asset matching your OS/GPU from a
-  [llama.cpp release](https://github.com/ggml-org/llama.cpp/releases) — plain
-  CPU build, or `*-vulkan-*` / `*-cuda-*` for GPU (see the Vulkan section below
-  for GPU setup specifics). Extract and run — no install step.
-- **Build from source:** clone
-  [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) and follow its
-  build docs (`cmake -B build && cmake --build build --config Release`).
-
-Either way you get `llama-server(.exe)` — point `$env:LLAMA_SERVER` at wherever
-you put it, start two instances (chat on :8080, embeddings on :8081) — see
-`scripts/`.
-
-**Model files are not stored inside this project.** This app only speaks HTTP
-to whatever server you run — it's engine-agnostic — so `.gguf` weights belong
-in a shared folder alongside your local-LLM tooling, not bundled into this
-package. A sibling folder works well:
-
-```
-Ollama CPP LLM\
-├── llama.cpp\           (the inference engine)
-├── models\              (shared .gguf weights — put them here)
-└── Website-AI-helper\   (this project, model-agnostic)
-```
-
-```powershell
-$env:LLAMA_SERVER="C:\path\to\llama-server.exe"; $env:CHAT_MODEL="..\models\Qwen3-14B-Instruct-Q4_K_M.gguf"
-.\scripts\start-llm.ps1
-$env:EMBED_MODEL_PATH="..\models\bge-m3-Q8_0.gguf"
-.\scripts\start-embeddings.ps1
-```
-
-Chat model should be instruct + tool-capable and started with `--jinja`.
-Embedding `EMBED_DIM` in `.env` must match the model (`bge-m3` = 1024,
-`nomic-embed-text` = 768).
-
-**Current default chat model: `Qwen3-14B-Instruct` (Q4_K_M, ~9GB).**
-Dense, tool-capable, and gives noticeably more thorough/structured answers
-than the 7B — but it only just fits an 11GB card (~10.8GB used with the
-embedding server also running, so no headroom for a second chat model
-alongside it). Measured on a GTX 1080 Ti: ~27 tok/s generation, ~2.9s
-time-to-first-token (streaming, so close to the 7B's perceived latency
-despite the lower raw token rate).
-
-Qwen3 ships with **hybrid thinking mode on by default** — without
-`chat_template_kwargs: {"enable_thinking": false}` (already wired into
-`agent.py`'s completion calls) it burns the whole token budget on hidden
-`<think>...</think>` reasoning instead of answering, the same failure mode
-GPT-OSS hit below.
-
-Previous default `Qwen2.5-7B-Instruct` (Q4_K_M, ~4.4GB) is still a good
-choice if you want more headroom / faster responses over max answer quality
-— ~60 tok/s / 0.3s-to-first-token, comfortably fits alongside the embedding
-model with room to spare. Swap `CHAT_MODEL` in `.env` to switch back.
-
-**Why not a bigger MoE model?** We benchmarked 20B+ Mixture-of-Experts
-alternatives on the same card and none were viable for a live chatbot:
-ERNIE-4.5-21B-A3B has no tool-calling in its chat template; GPT-OSS-20B
-spends 90%+ of its tokens on hidden "reasoning" (~25s for a 5-word answer);
-Qwen3-30B-A3B-Instruct managed only 1.8-3 tok/s with `--cpu-moe`/`-ncmoe`
-expert offloading. The MoE "only 3B active" pitch doesn't help when the
-inactive experts still live in slow CPU RAM — if the model doesn't fit
-VRAM, a dense model that does fit is ~20x faster. `start-llm.ps1` still
-supports MoE offload via `CPU_MOE=1` in `.env` for cards/models where the
-math works out.
-
-### Using the ChatGPT (OpenAI-hosted) API
-
-You don't need a local server at all — this app talks to any endpoint through
-the standard `openai` SDK, and `https://api.openai.com/v1` is just another
-OpenAI-compatible endpoint. Trade-off: no GPU/model-download hassle, but you
-pay per token and need an internet connection.
-
-**1. Get an API key** from [platform.openai.com](https://platform.openai.com/api-keys).
-
-**2. Point `.env` at OpenAI for chat:**
-
-```
-LLM_BASE_URL=https://api.openai.com/v1
-LLM_API_KEY=sk-...your real key...
-LLM_MODEL=gpt-4.1-mini
-LLM_EXTRA_BODY={}
-```
-
-`LLM_EXTRA_BODY` matters: the default value in `.env.example` disables Qwen3's
-"thinking" mode via a `chat_template_kwargs` field that only llama.cpp/vLLM
-understand — the real OpenAI API rejects unrecognized body fields, so this
-**must** be set to `{}` (or removed) once `LLM_BASE_URL` points at
-`api.openai.com`.
-
-Stick to a standard chat model (`gpt-4.1-mini`, `gpt-4o-mini`, etc.) rather
-than a reasoning/`o`-series model — reasoning models force `temperature=1`
-and use a different max-tokens parameter, neither of which this app sends.
-
-You can stop here and keep embeddings local (bge-m3 via `start-embeddings.ps1`)
-— only chat generation needs to change. If your local chat server
-(`start-llm.ps1`) is no longer needed, you can stop running it.
-
-**3. (Optional) Also move embeddings to OpenAI:**
-
-```
-EMBED_BASE_URL=https://api.openai.com/v1
-EMBED_API_KEY=sk-...your real key...
-EMBED_MODEL=text-embedding-3-small
-EMBED_DIM=1536
-EMBED_DOC_PREFIX=
-EMBED_QUERY_PREFIX=
-```
-
-(`text-embedding-3-large` gives `EMBED_DIM=3072` instead, at higher cost.)
-
-**Important:** switching embedding models changes the vector space — an
-existing Qdrant collection was built with the old model's vectors and isn't
-compatible with the new ones. Re-ingest every site after changing
-`EMBED_MODEL`/`EMBED_DIM` (see "Re-ingesting a site" below), or delete and
-recreate the collection first.
-
-### GPU acceleration with Vulkan (optional)
-
-**Vulkan is not part of this package.** Website-AI-helper only talks HTTP to an
-OpenAI-compatible server and is agnostic to how that server computes. GPU
-acceleration is a property of the **llama.cpp backend** you run behind it — so
-"pairing" is nothing more than: run a Vulkan-enabled `llama-server` with `-ngl`,
-then point `.env` at it (exactly as above). No app code or dependency changes.
-
-Vulkan is a good cross-vendor choice (NVIDIA / AMD / Intel) and needs no
-CUDA or ROCm toolkit.
-
-**1. Runtime prerequisite** — a GPU driver that ships the Vulkan runtime (the
-loader `vulkan-1.dll` on Windows, `libvulkan.so.1` on Linux). This is included
-with modern GPU drivers; you do **not** need the Vulkan SDK just to run.
-Verify:
-
-```bash
-vulkaninfo --summary     # lists your GPU as a Vulkan device (if installed)
-nvidia-smi               # NVIDIA: confirms the driver is present
-```
-
-**2. Get a Vulkan-enabled llama.cpp** — either:
-
-- **Prebuilt (easiest):** download the `*-vulkan-*` asset from a
-  [llama.cpp release](https://github.com/ggml-org/llama.cpp/releases). Needs only
-  the driver's Vulkan runtime — no SDK.
-- **Build from source:** install the
-  [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) (provides headers + the
-  `glslc` shader compiler), then:
-  ```bash
-  cmake -B build -DGGML_VULKAN=ON
-  cmake --build build --config Release
-  ```
-  (On a Windows **MinGW** toolchain also add `-DGGML_OPENMP=OFF` and define
-  `_WIN32_WINNT=0x0A00`; not needed with MSVC or on Linux.)
-
-**3. Start the servers with GPU offload** — add `-ngl 99` (offload all layers);
-`scripts/start-llm.ps1` / `scripts/start-embeddings.ps1` already do this.
-
-**4. Confirm it's actually on the GPU** — the server log prints e.g.
-`ggml_vulkan: Found 1 Vulkan devices: ... NVIDIA GeForce GTX 1080 Ti` and
-`load_tensors: offloaded 29/29 layers to GPU`, and `nvidia-smi` shows
-`llama-server` using VRAM. That's it — `.env` already points the app at these
-servers, so it uses the accelerated backend with no further change.
-
-### Crawling JavaScript / single-page-app sites
-
-By default the crawler does a plain HTTP GET — fast, but it only sees
-server-rendered HTML. For sites whose content (or navigation) is built by
-JavaScript in the browser, use `--render`, which drives a headless Chromium
-that executes the page's JS before extracting text:
-
-```bash
-pip install "website-ai-helper[render]"   # one-time
-playwright install chromium               # one-time (downloads the browser)
-
-website-ai-helper ingest https://my-spa.com --collection myspa --render
-```
-
-Rendering is slower per page, but crawling only happens at ingest time, so it
-doesn't affect answer latency. Tune the per-page settle time with
-`CRAWL_RENDER_WAIT_MS` (default 5000). If a page still comes back empty, its
-content likely loads on scroll/interaction, which this mode doesn't trigger.
-
-### Linked PDF files
-
-The crawler also downloads PDF files linked from crawled pages (detected by
-the `.pdf` URL extension; the same-domain rule applies) and ingests their
-text alongside regular pages — price lists, brochures, and forms become
-answerable. Each PDF counts toward `CRAWL_MAX_PAGES`. Limitations: scanned /
-image-only PDFs are skipped (no OCR), as are PDFs served from URLs without a
-`.pdf` extension. Set `CRAWL_PDFS=0` to disable, and `CRAWL_PDF_MAX_MB`
-(default 20) to cap the download size per file.
-
-### Vector store: run a real Qdrant server (recommended)
-
-By default the vector store is an **embedded local folder** (`./data/qdrant`)
-— zero setup, but it only allows **one process** to open it at a time. That
-means `ingest` and `serve` can't run simultaneously, and starting one while
-the other has it open fails outright (or, if a process dies mid-write,
-worse). This gets painful fast once you're doing real ingests.
-
-**Fix: run a real Qdrant server** — no Docker required, a small (~29 MB)
-native binary:
-
-```powershell
-# One-time: download from https://github.com/qdrant/qdrant/releases
-#   (qdrant-x86_64-pc-windows-msvc.zip) and extract to ..\qdrant\ (a sibling
-#   of this project), or set QDRANT_BIN to wherever you put it.
-.\scripts\start-qdrant.ps1
-```
-
-Then in `.env`:
-```
+```dotenv
+DATABASE_URL=postgresql://chathelper:YOUR_PASSWORD@127.0.0.1:5432/chathelper
+LLM_BASE_URL=http://127.0.0.1:8080/v1
+EMBED_BASE_URL=http://127.0.0.1:8081/v1
 QDRANT_URL=http://127.0.0.1:6333
-```
-Now `ingest` and `serve` can run at the same time, and one Qdrant instance
-holds every site's collection.
-
-### Re-ingesting a site (avoid duplicates)
-
-Point IDs are random, so **ingesting the same site twice duplicates every
-chunk** — the copies then crowd out other results in the retrieval top-K.
-To refresh a site's content, delete its collection first, then ingest:
-
-```powershell
-# NOTE: in PowerShell `curl` aliases Invoke-WebRequest — use curl.exe,
-# or natively: Invoke-RestMethod -Method Delete http://127.0.0.1:6333/collections/adr
-curl.exe -X DELETE http://127.0.0.1:6333/collections/adr
-
-website-ai-helper ingest https://adrlandia.com --collection adr
+EMBED_DIM=1024
+ALLOWED_ORIGINS=http://localhost:3000
+QA_TOKEN=YOUR_LONG_RANDOM_TOKEN
+QA_COOKIE_SECURE=0
 ```
 
-The collection is recreated automatically at ingest. Heads-up: the collection
-is empty while the re-crawl runs, so a live chatbot on it answers without
-website context for those few minutes.
-
-**Migrating existing data** from the embedded folder to a server: open both
-with `qdrant_client` (`QdrantClient(path="data/qdrant")` and
-`QdrantClient(url="http://127.0.0.1:6333")`), then for each collection,
-recreate it on the server with the same `VectorParams` and copy points across
-with `scroll(..., with_vectors=True)` → `upsert(...)` (convert each `Record`
-to a `PointStruct` first). Stop anything using the embedded folder first.
-
-## Configuration
-
-All via `.env` or CLI flags (see `.env.example`). Common knobs:
-
-| Var | Meaning |
-|---|---|
-| `LLM_BASE_URL` / `EMBED_BASE_URL` | Your chat / embedding endpoints (any OpenAI-compatible server, incl. `https://api.openai.com/v1` — see "Using the ChatGPT (OpenAI-hosted) API") |
-| `LLM_API_KEY` / `EMBED_API_KEY` | API key for each endpoint (ignored by local servers, required by hosted APIs) |
-| `LLM_MODEL` / `EMBED_MODEL` | Model name each endpoint routes on (ignored by llama-server, required by hosted APIs) |
-| `LLM_EXTRA_BODY` | Extra JSON merged into chat requests; default disables Qwen3 "thinking" mode. Set to `{}` for hosted APIs, which reject unrecognized fields |
-| `EMBED_DIM` | Embedding dimensionality (must match the model) |
-| `QDRANT_URL` | Empty = embedded local folder (single-writer); set to a Qdrant server URL to allow concurrent ingest+serve |
-| `QDRANT_COLLECTION` | Knowledge base name — **one per site** |
-| `TOP_K`, `CHUNK_SIZE` | Retrieval tuning |
-| `FREQUENCY_PENALTY`, `PRESENCE_PENALTY`, `MAX_TOKENS` | Anti-repetition / runaway-generation guards |
-| `SITE_NAMES` | Per-collection site names for multi-tenant serving (`acme=Acme Shop,adr=Adrlandia`) |
-| `SITE_STYLES` | Per-collection answer tone/style, appended to the system prompt (`acme=Tono diretto.\|adr=Tono cordiale.` — `\|`-separated, see "Embedding the widget") |
-| `WIDGET_STYLES_DIR` | Folder of per-collection widget CSS overrides, `<collection>.css` (default `widget_styles`) |
-| `WIDGET_STRINGS_DIR` | Folder of per-collection widget UI text overrides, `<collection>.json` (default `widget_strings`) |
-| `CRAWL_MAX_PAGES`, `CRAWL_SAME_DOMAIN` | Crawl scope |
-| `CRAWL_PDFS`, `CRAWL_PDF_MAX_MB` | Ingest linked PDF files (default on, 20 MB cap) |
-| `CRAWL_RENDER`, `CRAWL_RENDER_WAIT_MS` | Render JS with a headless browser (`--render`) and settle time |
-| `ALLOWED_ORIGINS` | Comma-separated origins allowed to call `/chat`; empty = allow any (dev only) |
-| `PAGE_MAX_CHARS` | Max chars of the visitor's current page put in the prompt (default 1500; bigger = slower first token) |
-| `QUERY_REWRITE` | Rewrite follow-ups into standalone search queries (default on) |
-| `BOILERPLATE_STRIP` (+`_MIN_PAGES`, `_PAGE_FRACTION`) | Remove repeated nav/cookie/footer lines at ingest (default on) |
-| `LLM_SLOTS`, `LLM_CTX` | Parallel generations (`-np`) and TOTAL context tokens (`-c`, split across slots; keep ≈ `LLM_SLOTS`×4096). Used by all launch paths — scripts and Docker |
-| `QA_TOKEN` | Enables the private `/qa` conversation-review site (empty = disabled) |
-
-## Deploying on a GPU / AI compute server
-
-The Python app is fully portable; only the launcher scripts are OS-specific
-(`scripts/*.ps1` for Windows, `scripts/*.sh` for Linux/macOS). Two paths:
-
-### Path A — Docker Compose (recommended: one command, no builds)
-
-Runs the whole stack — CUDA-accelerated chat + embedding llama.cpp servers,
-Qdrant, and the app — from official images. Host needs the NVIDIA driver and
-[nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/).
+Create the PostgreSQL database and user named in the URL before serving. Set
+`EMBED_DIM` to the actual embedding model dimension and adjust the endpoint
+URLs to your running services. See [.env.example](.env.example) for the other
+settings. If you leave `QDRANT_URL` empty, local embedded Qdrant works only
+with one process and cannot be used by ingestion and serving concurrently.
 
 ```bash
-git clone https://github.com/Xan9999/Website-AI-helper && cd Website-AI-helper
-mkdir models   # put your .gguf files here (chat model + bge-m3)
-cp .env.example .env   # then set at least: CHAT_MODEL_FILE, EMBED_MODEL_FILE, QA_TOKEN, ALLOWED_ORIGINS
-
-docker compose up -d
-docker compose run --rm app website-ai-helper ingest https://client-site.com --collection clientsite
-curl http://localhost:8000/health
+chathelper ingest https://example.com --collection example
+chathelper serve --collection example
+curl http://127.0.0.1:8000/health
 ```
 
-Compose-specific variables (set in `.env`): `CHAT_MODEL_FILE` /
-`EMBED_MODEL_FILE` (filenames inside `./models`), `MODELS_DIR`, `APP_PORT`.
-`LLM_SLOTS` / `LLM_CTX` (see Configuration) apply here too — with 24 GB+
-VRAM raise them, e.g. `LLM_SLOTS=10` / `LLM_CTX=40960`. Larger models are
-just a bigger `.gguf` in `./models` + a `CHAT_MODEL_FILE` change +
-`docker compose up -d llm`.
+`/` returns service metadata, not a preview page. `/health` confirms the
+process is responding. `/ready` checks PostgreSQL, Qdrant, and both model
+endpoints. The old preview and product/order examples were removed.
 
-### Path B — bare metal (systemd-friendly)
+## Prepare a Linux VPS deployment
 
-1. Build llama.cpp with CUDA: `cmake -B build -DGGML_CUDA=ON && cmake --build build -j`
-   (or grab a prebuilt release binary), and download a Qdrant release binary.
-2. `python -m venv .venv && .venv/bin/pip install .` in the repo.
-3. Fill `.env` (`LLAMA_SERVER`, `CHAT_MODEL`, `EMBED_MODEL_PATH`, `QDRANT_BIN`,
-   `QDRANT_URL=http://127.0.0.1:6333`, ...).
-4. Start the three services + app — same layout as on Windows:
-   ```bash
-   scripts/start-qdrant.sh &
-   scripts/start-embeddings.sh &
-   scripts/start-llm.sh &
-   website-ai-helper serve --host 0.0.0.0 --port 8000
-   ```
-   For production, wrap each of the four in a systemd unit (`Restart=always`)
-   instead of `&`. `LLM_CTX` (default 16384) and `EMBED_NGL` tune GPU use.
+The provided Compose stack assumes an NVIDIA GPU, a driver and NVIDIA
+Container Toolkit on the VPS, and two GGUF model files. It does not run
+Passenger, SQLite, or a second public web server. If the VPS is CPU-only or
+uses a hosted model API, adapt the model services before deployment.
 
-### Path C — container GPU rentals (Vast.ai, RunPod, …)
-
-Marketplace rentals hand you a **container**, not a VM — Docker Compose won't
-run inside, so use Path B's flow with these container-specific adjustments
-(each learned the hard way):
-
-1. **Rent right:** on-demand (not interruptible), verified/high-reliability
-   host, and set the **disk slider ≥ 60 GB** — disk is fixed at creation and
-   "container memory 100%" means your allocation is full, not the host's.
-2. **Pre-flight before any setup** (destroy the instance immediately if
-   either fails):
-   ```bash
-   nvidia-smi   # each GPU ~0-500 MiB used at idle. Gigabytes used with no
-                # visible processes = ANOTHER TENANT is on your GPUs
-                # (container nvidia-smi hides foreign PIDs but memory totals
-                # are real) — destroy and report the host.
-   df -h ~      # ~30 GB free for a 32B model + venv + qdrant
-   ```
-3. **Port collisions:** templates often run Jupyter on **8080** — set
-   `LLM_PORT=8082` + `LLM_BASE_URL=http://127.0.0.1:8082/v1` in `.env`. If
-   8000 is taken too, `serve --port 8010`.
-4. **Install editable** (`pip install -e .`) so `git pull` updates the
-   running code without a reinstall; use absolute paths in `.env` (`/root/...`
-   — `~` is NOT expanded), and start each service with `nohup ... &` so it
-   survives the terminal.
-5. **Reaching it:** the panel's port mappings / tunnel links are the
-   provider's token-authenticated portal — not usable for the widget. Either
-   SSH-forward from a machine you trust (`ssh -N -L 8000:localhost:8010
-   root@<instance>` — zero public exposure, can sit behind your existing
-   nginx/domain as a relay), or run a Cloudflare quick tunnel on the
-   instance for a temporary public HTTPS URL.
-6. **Don't type credentials into a rented box** (the host owner can inspect
-   the disk): clone a public repo or `scp` a tarball; use throwaway tokens.
-
-Either way, expose the app port through your reverse proxy / Cloudflare
-Tunnel exactly as described below, and set `ALLOWED_ORIGINS` + `QA_TOKEN`
-before going live.
-
-## Embedding the widget on your site
-
-Serve the backend somewhere your site can reach — over **HTTPS** with a real
-certificate (e.g. Caddy/nginx reverse-proxying Uvicorn, or
-`serve --ssl-certfile cert.pem --ssl-keyfile key.pem` / `SSL_CERTFILE`+
-`SSL_KEYFILE` env vars to let Uvicorn terminate TLS itself), since a browser
-will block `fetch()` from an `https://` page to a plain `http://` backend.
-Then set `ALLOWED_ORIGINS=https://clientsite.com,https://www.clientsite.com`
-in `.env` before going live (default is wide-open, fine for local testing
-only).
-
-> **Symptom decoder:** if the backend logs `WARNING: Invalid HTTP request
-> received.` on every page load, the snippet says `https://` but the backend
-> is speaking plain HTTP — the TLS handshake bytes are hitting Uvicorn as
-> garbage. Terminate TLS (see above); note browsers reject self-signed certs
-> and Let's Encrypt won't issue for a bare IP, so you need a (sub)domain
-> pointed at the server, e.g. `chat.yourdomain.com`.
-
-### HTTPS from a home/office PC: Cloudflare Tunnel
-
-If the backend runs on your own machine (no public server, router/NAT in the
-way), a **Cloudflare Tunnel** is the easiest way to get a real HTTPS URL: the
-`cloudflared` agent opens an *outbound* connection to Cloudflare's edge,
-Cloudflare terminates TLS with its own valid certificate, and relays requests
-down the tunnel to `localhost:8000`. No domain DNS on the client's side, no
-certificate to obtain, no router port-forwarding — and the widget-hosting
-site does **not** need to be yours; the snippet can point at any HTTPS URL
-(that's how all third-party widgets work).
-
-**Quick tunnel — testing, zero setup, no account:**
-
-```powershell
-# one-time download (single ~50MB exe, no installer):
-curl -L -o cloudflared.exe https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe
-
-# run it (keep the window open — closing it kills the URL):
-.\cloudflared.exe tunnel --url http://localhost:8000
+```bash
+git clone https://github.com/Xan9999/ChatHelper.git /srv/chathelper/app
+cd /srv/chathelper/app
+bash scripts/deploy.sh prepare    # creates private config and random secrets
+# edit .env.production and place GGUF files in MODELS_DIR
+bash scripts/deploy.sh validate   # checks inputs and Compose without starting
+bash scripts/deploy.sh up         # starts only when you decide to deploy
 ```
 
-It prints a random `https://<random-words>.trycloudflare.com` URL — use that
-as the backend in the embed snippet. **Caveats:** the URL only lives while
-the process runs, and a *new random URL* is issued on every restart (so the
-snippet on the client site must be updated each time) — fine for demos,
-wrong for production.
+`prepare` generates `.env.production` from
+[.env.production.example](.env.production.example), plus separate PostgreSQL
+administrator, limited app-login, and QA secret files. These are excluded from
+Git and the image build. Review
+the domain, email, absolute `MODELS_DIR`, model filenames, embedding dimension,
+and `ALLOWED_ORIGINS` before running `up`. The domain must point to the VPS;
+ports 80 and 443 must be reachable for automatic TLS. Do not publish 5432,
+6333, 8000, 8080, or 8081.
 
-**Named tunnel — production, stable URL (`chat.yourdomain.com`):**
+On Windows, Docker Desktop with the WSL 2 backend can validate/build this
+Linux stack locally, but production deployment remains Linux. WSL 2 requires
+firmware virtualization and Windows features to be enabled. Use the Docker
+installer's `--wsl-default-data-root` option or its Resources settings to put
+container data on D: if you need that on a Windows test machine.
 
-Needs a free Cloudflare account and a domain you own (~10€/yr — any
-registrar). One-time setup:
+## Index a site and embed the widget
 
-1. **Put the domain on Cloudflare:** Cloudflare dashboard → "Add a site" →
-   follow the prompt to switch your domain's nameservers at the registrar to
-   the two Cloudflare gives you (takes minutes to a few hours to propagate).
-2. **Authenticate the agent:** `.\cloudflared.exe tunnel login`
-   (opens a browser, pick the domain).
-3. **Create the tunnel:** `.\cloudflared.exe tunnel create wah-chat`
-   — prints a tunnel UUID and writes a credentials JSON.
-4. **Point a hostname at it:**
-   `.\cloudflared.exe tunnel route dns wah-chat chat.yourdomain.com`
-   (creates the DNS record on Cloudflare automatically).
-5. **Config file** `%USERPROFILE%\.cloudflared\config.yml`:
-   ```yaml
-   tunnel: wah-chat
-   credentials-file: C:\Users\<you>\.cloudflared\<tunnel-uuid>.json
-   ingress:
-     - hostname: chat.yourdomain.com
-       service: http://localhost:8000
-     - service: http_status:404
-   ```
-6. **Run it — as a Windows service** so it survives reboots:
-   `.\cloudflared.exe service install`, then start "Cloudflared" in
-   services.msc (or `.\cloudflared.exe tunnel run wah-chat` to run manually).
+After the production stack is healthy:
 
-The snippet then uses `https://chat.yourdomain.com/widget.js?...` forever —
-one stable hostname serves every client site (each with its own
-`client_id`), certificates renew themselves, and nothing on your machine is
-directly exposed to inbound internet traffic. Remember to set
-`ALLOWED_ORIGINS` once it's live.
+```bash
+bash scripts/deploy.sh ingest https://tallweb.net \
+  --collection tallweb --site-name Tallweb --max-pages 200
+```
 
-### HTTPS via port-forwarding: nginx + Let's Encrypt (no tunnel)
-
-If you'd rather expose the server directly (any DNS provider works — no
-nameserver changes needed):
-
-1. **DNS**: add an `A` record `chat.yourdomain.com -> your public IP`. On a
-   home connection the IP changes — keep the record updated (DDNS) or use a
-   fixed-IP server.
-2. **Router**: forward TCP **80 and 443** to the server. Do NOT forward 8000 —
-   run the app on `--host 127.0.0.1` so only nginx is reachable from outside.
-3. **nginx + certbot** (Linux):
-   ```bash
-   sudo apt install nginx certbot python3-certbot-nginx
-   ```
-   Site config proxying to the app:
-   ```nginx
-   server {
-       listen 80;
-       server_name chat.yourdomain.com;
-       location / {
-           proxy_pass http://127.0.0.1:8000;
-           proxy_http_version 1.1;
-           proxy_set_header Connection "";
-           proxy_set_header Host $host;
-           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-           proxy_set_header X-Forwarded-Proto $scheme;
-           # SSE streaming: without these nginx buffers the whole answer and
-           # the widget shows nothing until generation finishes.
-           proxy_buffering off;
-           proxy_cache off;
-           proxy_read_timeout 300s;
-       }
-   }
-   ```
-   ```bash
-   sudo ln -s /etc/nginx/sites-available/chat /etc/nginx/sites-enabled/
-   sudo nginx -t && sudo systemctl reload nginx
-   sudo certbot --nginx -d chat.yourdomain.com   # gets cert, adds 443 + redirect, auto-renews
-   ```
-4. **Windows variant** (nginx + win-acme — certbot doesn't exist on Windows):
-   1. Unzip nginx from [nginx.org/en/download.html](https://nginx.org/en/download.html)
-      to `C:\nginx` — avoid `C:\Program Files\...`: nginx treats unquoted
-      paths with spaces as multiple arguments (`invalid number of arguments
-      in "root" directive`); if you must use a spaced path, double-quote it
-      in every directive (`root "C:/Program Files/nginx/acme";`, same for
-      the `ssl_certificate*` lines). Open the firewall:
-      ```powershell
-      New-NetFirewallRule -DisplayName "nginx http"  -Direction Inbound -Protocol TCP -LocalPort 80  -Action Allow
-      New-NetFirewallRule -DisplayName "nginx https" -Direction Inbound -Protocol TCP -LocalPort 443 -Action Allow
-      ```
-   2. In `C:\nginx\conf\nginx.conf`, add the same `server` block as above
-      inside `http { }`, plus a webroot for the certificate challenge:
-      ```nginx
-      location /.well-known/acme-challenge/ { root C:/nginx/acme; }
-      ```
-      Create `C:\nginx\acme`, then start nginx: `cd C:\nginx; .\nginx.exe`
-      (config test: `.\nginx.exe -t`, reload after edits: `.\nginx.exe -s reload`).
-   3. Get the certificate with [win-acme](https://www.win-acme.com/) (single
-      `wacs.exe`, run as admin). Pick: full options (`M`) → `Manual input` →
-      host `chat.yourdomain.com` → validation `[http] Save verification files
-      on (network) path` → path `C:\nginx\acme` → store `PEM encoded files` →
-      path `C:\nginx\certs`. win-acme validates through the running nginx,
-      writes `chat.yourdomain.com-chain.pem` + `-key.pem`, and registers a
-      Windows scheduled task that renews automatically.
-   4. Add the HTTPS server block to `nginx.conf` and reload:
-      ```nginx
-      server {
-          listen 443 ssl;
-          server_name chat.yourdomain.com;
-          ssl_certificate     C:/nginx/certs/chat.yourdomain.com-chain.pem;
-          ssl_certificate_key C:/nginx/certs/chat.yourdomain.com-key.pem;
-          location / { # same proxy settings as the port-80 block above
-              proxy_pass http://127.0.0.1:8000;
-              proxy_http_version 1.1;
-              proxy_set_header Connection "";
-              proxy_set_header Host $host;
-              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-              proxy_set_header X-Forwarded-Proto $scheme;
-              proxy_buffering off;
-              proxy_cache off;
-              proxy_read_timeout 300s;
-          }
-      }
-      ```
-      In the port-80 block, replace `location /` with a redirect:
-      `return 301 https://$host$request_uri;` (keep the acme-challenge
-      location so renewals keep working).
-   5. Start nginx at boot: Task Scheduler → new task, run whether user is
-      logged on or not, action `C:\nginx\nginx.exe`, start in `C:\nginx`
-      (or wrap it as a service with [NSSM](https://nssm.cc/)).
-
-`proxy_buffering off` + `proxy_http_version 1.1` are load-bearing: `/chat`
-streams Server-Sent Events, and nginx's default buffering would freeze the
-widget until the full answer is generated. Set `ALLOWED_ORIGINS` once live.
-
-**Order of operations matters:** nginx refuses to start while
-`ssl_certificate` points at files that don't exist yet. Bring it up in this
-order: port-80 block only (with the acme-challenge location) → start nginx →
-run certbot / win-acme → only then add the 443 block, with every
-`chat.yourdomain.com` placeholder replaced by your real subdomain → reload.
-DNS (`A` record live) and the port-80 forward must be in place *before*
-certificate validation — Let's Encrypt reaches in from the internet.
-
-> **Symptom decoder (certificate setup):**
-> - nginx `invalid number of arguments in "root" directive` — unquoted path
->   with spaces (see step 1).
-> - nginx `cannot load certificate ... BIO_new_file() failed ... no such
->   file` — the 443 block references PEM files that don't exist yet (wrong
->   path/filename, placeholder domain still in the config, or win-acme
->   hasn't succeeded yet). Comment the 443 block out until it has.
-> - win-acme `Error preparing for challenge answer` +
->   `UnauthorizedAccessException` in its log
->   (`C:\ProgramData\win-acme\...\Log\`) — wacs.exe wasn't run **as
->   administrator**, so it can't write the challenge file under
->   `C:\Program Files`. Re-run elevated.
-> - win-acme validation fails with a timeout/unreachable error — DNS record
->   missing/stale or router isn't forwarding port 80 to this machine yet.
-
-### One-line async embed (recommended)
-
-`GET /widget.js` serves a self-contained loader script — no markup to copy,
-one snippet handles every client site:
+The collection name is the public widget `client_id`. Put this snippet in the
+site's footer, replacing the hostname and collection as needed:
 
 ```html
 <script>
 !function(d,u,i,l,p,a){
-    var s=d.createElement("script");s.async=1;
-    s.src=u+"?client_id="+i+"&language="+l+(p?"&position="+p:"")+(a?"&accent="+encodeURIComponent(a):"");
-    var h=d.getElementsByTagName("script")[0];h.parentNode.insertBefore(s,h);
-}(document,"https://your-backend/widget.js","acme","en");
+  var s=d.createElement("script"); s.async=1;
+  s.src=u+"?client_id="+encodeURIComponent(i)+"&language="+encodeURIComponent(l)
+    +(p?"&position="+encodeURIComponent(p):"")
+    +(a?"&accent="+encodeURIComponent(a):"");
+  var h=d.getElementsByTagName("script")[0]; h.parentNode.insertBefore(s,h);
+}(document,"https://chat.tallweb.net/widget.js","tallweb","en");
 </script>
 ```
 
-- `client_id` **is** the Qdrant collection name — the same one you passed to
-  `--collection` at ingest time (`website-ai-helper ingest https://acme.com
-  --collection acme`). One backend + one snippet template serves every client;
-  swap the `client_id` per site. Leave it blank to fall back to this install's
-  default `QDRANT_COLLECTION`.
-- Give each site a display name via `SITE_NAMES` in `.env`
-  (`SITE_NAMES=acme=Acme Shop,adr=Adrlandia`) — the agent introduces itself as
-  "assistant for <name>", resolved per request from the `client_id`. Sites
-  without an entry fall back to the generic `SITE_NAME`.
-- `language` only picks the widget's UI strings (button labels, placeholder —
-  currently `en`/`it`/`sl`, defaulting to `en`); the assistant itself already
-  answers in whatever language the visitor actually types.
-- The script reads both params from its own `<script src>` at load time via
-  `document.currentScript`, builds the whole widget via DOM APIs, and POSTs
-  `client_id` on every `/chat` call — nothing else to configure per site.
-- **Per-site visual branding** — two more, OPTIONAL, positional arguments on
-  the same function call above (`p` then `a`), so one shared `widget.js` file
-  serves every client with a different look — no per-site copies to maintain:
-  - `p` (position): `"left"` or `"right"` (default `"right"`) — which bottom
-    corner the toggle button and panel open from.
-  - `a` (accent): a hex color for the header/buttons/user bubbles, e.g.
-    `"#f17023"` — the wrapper URL-encodes it for you (`encodeURIComponent`),
-    no manual `%23` needed. Malformed values fall back to the default blue.
-  ```html
-  }(document,"https://your-backend/widget.js","acme","en","left","#f17023");
-  ```
-  Omit either (or both) to keep the default — e.g. `(document,"https://your-backend/widget.js","acme","en","left")`
-  sets only the position. **Don't pass them as extra bare arguments after the
-  closing `)` of an older 4-argument snippet** (`...,"en"), position="left")`)
-  — that does nothing (an unused 5th argument) and creates a stray global
-  variable besides; the wrapper function itself must have the `p,a` parameters
-  shown above, or an old copy of the snippet won't know what to do with them.
-- **Full per-site visual customization**: for anything beyond `accent`/
-  `position` (fonts, spacing, animations, a logo, dark mode — literally any
-  CSS), drop a file at `widget_styles/<client_id>.css` on the backend. It's
-  served at `GET /widget.css?client_id=...` and linked by `widget.js`
-  automatically right after its own base styles, so your rules win the
-  cascade without `!important`. A collection with no file here just gets the
-  default look — see `widget_styles/README.md` for the available CSS hooks
-  (`#wah-toggle`, `#wah-panel`, `.wah-msg.user`/`.wah-msg.bot`, etc.) and the
-  `--wah-*` custom properties you can reassign instead of rewriting whole
-  rules. `WIDGET_STYLES_DIR` in `.env` changes the folder (default
-  `widget_styles`).
-- **Full per-site UI text**: same idea for the widget's title/subtitle/
-  placeholder/send-button label/unreachable-error message — drop
-  `widget_strings/<client_id>.json` with any subset of those keys (e.g. just
-  `{"title": "Ricambi Ribi"}`); it's fetched at `GET
-  /widget-strings.json?client_id=...` and merged over the `language` default
-  strings client-side, so an omitted key just keeps its language default.
-  `WIDGET_STRINGS_DIR` in `.env` changes the folder (default
-  `widget_strings`). Both this and the CSS file are independent — use
-  either, both, or neither per site.
-- **Per-site answer tone**, server-side (not a widget param): set `SITE_STYLES`
-  in `.env` to append a style/tone instruction to the system prompt for a
-  given collection, e.g.
-  `SITE_STYLES=acme=Tono diretto e professionale, senza emoji.|adr=Tono cordiale, puoi usare qualche emoji.`
-  Entries are separated by `|` (not `,`) since a tone instruction is free text
-  and commonly contains commas itself. It's appended after the base system
-  prompt and can't override the source-precedence/safety rules above it.
-  Collections without an entry get the default tone only.
+`language` changes widget labels (`en`, `it`, `sl`); the assistant responds in
+the visitor's question language. Optional `position` (`left`/`right`) and
+`accent` (hex color) customize the appearance. Per-collection CSS and UI text
+can also be committed under `widget_styles/<client_id>.css` and
+`widget_strings/<client_id>.json`. Set `ALLOWED_ORIGINS` to the exact origins
+hosting the widget, e.g. `https://tallweb.net,https://www.tallweb.net`.
 
-The widget sends the visitor's current URL, title, and page text as context —
-this works unmodified on any page it's embedded in, including a WordPress site.
+The `client_id` is a selector, not an authentication mechanism: collections
+should contain only content safe for public visitors. A `client_id` that does
+not name an existing collection is rejected with HTTP 404; visitors cannot
+create collections. Crawled prices and availability can become stale;
+re-ingest after significant site changes.
 
-**On WordPress:** there's no code to write on the WP side beyond pasting the
-snippet once. Add it sitewide via:
-- A "header/footer" plugin (e.g. WPCode, "Insert Headers and Footers") — paste
-  the snippet into the footer, applies to every page.
-- Your (child) theme's `footer.php`, right before `</body>`, if you're
-  comfortable editing theme files — survives non-child-theme updates only if
-  it's a child theme.
+Re-ingesting is safe to repeat: each chunk's Qdrant id is derived from its
+page URL and position, so a re-crawled page overwrites its own chunks instead
+of duplicating them. Pages that disappeared from the site keep their old
+chunks until you do a full refresh, which drops and recreates the collection
+only after the new crawl has succeeded:
 
-Avoid page builders' "custom HTML" blocks for a *sitewide* widget — those only
-apply per-page, so you'd have to repeat it everywhere.
-
-### Manual embed (alternative)
-
-Copy the markup + `<script>` from `website_ai_helper/web/widget.html` directly
-onto your pages instead, and set `const BACKEND = "https://your-backend"`.
-Useful if you want to customize the markup/CSS per site rather than share one
-script across clients. This path doesn't support `client_id` — it always talks
-to the install's default collection.
-
-**Known limitation:** `client_id` only routes vector retrieval to the matching
-collection; the structured-DB tools (`structured.py`) still hit one shared
-demo SQLite regardless of `client_id`. Multi-tenant structured data needs
-per-client DB wiring, not yet implemented.
-
-**Concurrent visitors:** the app handles simultaneous requests fine;
-`llama-server` interleaves as many generations as `LLM_SLOTS` in `.env`
-(default 2 — a third simultaneous question queues briefly). Each slot gets
-`LLM_CTX ÷ LLM_SLOTS` context tokens, so raise them together (≈4096/slot;
-see the Configuration table) — and note both cost VRAM: e.g. an 11 GB card
-maxes out at `LLM_SLOTS=2` / `LLM_CTX=8192` with a 14B model, while a 32 GB
-card handles `LLM_SLOTS=10` / `LLM_CTX=40960` with a 32B model.
-
-## Conversation logging & QA review
-
-Every chat turn is logged automatically to a SQLite database
-(`data/conversations.db`): the client's message, the agent's full reply,
-per-reply latency, and conversation metadata (site/collection, the page the
-visitor was on, timestamps). Conversation duration = first to last message;
-the widget groups turns with a per-session conversation id.
-
-To review transcripts, set a secret in `.env`:
-
-```
-QA_TOKEN=some-long-random-string
+```bash
+bash scripts/deploy.sh ingest https://tallweb.net --collection tallweb --replace
 ```
 
-then open the **private QA site**:
+Collections created by versions before hybrid retrieval (dense-only) are still
+served, but `--replace` is also the way to upgrade them to the current schema.
 
-- `/qa?token=<QA_TOKEN>` — all conversations across every site: start time,
-  site, message count, duration, first message, error flags; a "Sites:" nav
-  strip links to each collection's own page
-- `/qa/<collection>?token=<QA_TOKEN>` — same list, filtered to one site, e.g.
-  `/qa/alemo` (a collection with no chats yet shows "No conversations yet"
-  rather than an error)
-- click **view** for the human-readable transcript (`Client:` / `Agent:`
-  with per-reply latency), or **txt** to download it as plain text
+## PostgreSQL and QA review
 
-With `QA_TOKEN` empty the `/qa` routes are disabled (logging still happens).
-The transcripts contain whatever visitors type — treat the token like a
-password and use HTTPS if the backend is reachable from outside.
+The app creates two PostgreSQL tables at startup:
 
-## Connecting your real database
+| Table | Used for |
+|---|---|
+| `conversations` | One UUID per chat session, collection/site, visitor page, and start time. |
+| `messages` | Ordered client/agent turns, timestamps, reply latency, and internal errors. |
 
-Everything DB-specific lives in `website_ai_helper/structured.py`:
+Both tables are used only for logging and `/qa`, not for answering product or
+order questions. Qdrant holds the crawled website knowledge used for answers.
+PostgreSQL connection pooling and transaction-safe schema initialization allow
+multiple app workers to share the same durable database.
+The Compose stack creates a dedicated non-superuser `chathelper_app` role;
+the app container never receives PostgreSQL's administrator password.
+Existing local SQLite conversation files are left untouched and are not
+automatically imported into PostgreSQL.
 
-1. Replace `_conn()` / `init_demo_db()` with your database (use a **read-only**
-   user — Postgres, MySQL, SQLite, …).
-2. Rewrite the tool functions (`search_products`, `get_order_status`) as
-   parameterized queries for your tables, and update the `TOOLS` schemas.
+Open `https://chat.tallweb.net/qa/login` and enter the generated QA token to
+review conversations. Login uses a short-lived, signed, HttpOnly, Secure
+cookie; the token is never placed in a URL. If `QA_TOKEN` is empty, the review
+page is disabled but logging continues. Chat text may contain personal data:
+restrict access and define a retention policy.
 
-The model calls these tools rather than writing SQL, which keeps it safe and
-reliable. For the *unstructured* half of another database (free text), embed it
-alongside the website with `ingest_pages([...])`.
+## Operations and safety
 
-## How it works
-
-```
-ingest  ─crawl→ chunk → embed →  Qdrant (per-site collection)
-                                      ▲ retrieve
-browser widget ─POST /chat→ FastAPI ──┤
- (msg + page)                         ▼ tool calls (price/stock/orders)
-                    chat LLM  ◄──►  your database (read-only tools)
-```
-
-The model answers from retrieved content, calls DB tools for live facts, and
-streams the grounded answer back — following a strict source-precedence rule
-(tool results > current page > website content).
-
-## Answer-quality strategy
-
-Three techniques work together so the model sees the *right* context. What
-happens to a question, end to end:
-
-```
-ingest:  crawl → STRIP BOILERPLATE → chunk → dense vector + sparse vector → Qdrant
-query:   message ──(follow-up?)──> REWRITE to standalone query
-                                      │ embed          │ tokenize
-                                      ▼                ▼
-                               dense search      lexical search
-                                      └───── RRF fusion ─────┘ → top-K chunks → prompt
+```bash
+bash scripts/deploy.sh status
+bash scripts/deploy.sh logs app
+bash scripts/deploy.sh backup
+bash scripts/deploy.sh prune --days 90
+bash scripts/deploy.sh update
+bash scripts/deploy.sh down
 ```
 
-### 1. Boilerplate stripping (ingest-time)
+`backup` produces a PostgreSQL custom-format dump and downloaded Qdrant
+snapshots with SHA-256 checksums. Copy completed backups off the VPS and test
+restores on a separate instance. `prune` deletes logged conversations older
+than the given number of days (chat logs are personal data; pick a retention
+period and run this from cron). `update` backs up first, then performs a
+fast-forward-only Git pull and rebuild. `down` preserves persistent volumes;
+do not add `--volumes` unless you intentionally want to destroy data.
 
-Crawled pages repeat the same cookie banner, menu, and footer on every page.
-Left in, that text is embedded into every chunk's vector (pulling all vectors
-toward each other, blurring search) and wastes prompt tokens. At ingest, any
-line appearing on ≥ 30% of crawled pages (min 4) is removed before chunking;
-pages that were pure boilerplate are dropped entirely. Knobs:
-`BOILERPLATE_STRIP=1`, `BOILERPLATE_MIN_PAGES=4`, `BOILERPLATE_PAGE_FRACTION=0.3`.
+The app bounds message length and history, rejects injected system roles,
+applies basic per-worker request limits, times out stuck model calls, and does
+not return internal errors to visitors. For a public high-traffic site, also
+use edge/CDN rate limiting and monitor model queueing, disk, RAM/VRAM, and
+database pool usage. The model can still make mistakes; review answers before
+relying on them.
 
-### 2. Follow-up query rewriting (query-time)
+If the chat model is a hosted API (`LLM_BASE_URL=https://api.openai.com/v1`),
+every visitor question, the retrieved site text, and up to `PAGE_MAX_CHARS`
+of the page the visitor is viewing are sent to that provider. State this in
+the site's privacy notice, or keep the model local.
 
-Retrieval embeds only the latest message, so in "do you make winders?" →
-*"how much does it cost?"* the follow-up used to search for a generic price
-question and retrieve junk. Now one small non-streamed LLM call rewrites
-follow-ups into standalone queries ("how much does the automatic winder
-cost?"), resolving pronouns from the conversation and keeping the visitor's
-language. First messages are never rewritten (zero extra latency); failures
-fall back to the raw message. Knob: `QUERY_REWRITE=1`.
+## Running the tests
 
-### 3. Hybrid retrieval — dense + lexical with RRF fusion (query-time)
+```bash
+pip install -e ".[dev]"
+python -m unittest discover -s tests
+```
 
-Dense embeddings (bge-m3) capture *meaning* — "machine that rolls up foam"
-finds the winder page — but are weak at exact identifiers: "EXT120" embeds
-near generic machinery text. Keyword search has the opposite profile. Each
-chunk is therefore stored with TWO vectors: the dense embedding, plus a
-sparse term-frequency vector of its words (lowercased, diacritics folded so
-"celade" matches "čelade", hashed to stable ids — see `lexical.py`; Qdrant
-weighs rare terms higher server-side via IDF). Each
-query runs both searches and Qdrant merges the two rankings with Reciprocal
-Rank Fusion — a chunk ranked high by either meaning OR exact keywords makes
-the final top-K.
-
-**Upgrading existing collections:** hybrid applies to collections created by
-this version. Older (dense-only) collections keep working unchanged; to
-upgrade one, delete and re-ingest it (see "Re-ingesting a site"). Note that
-hybrid search scores are rank-based (~0.01–0.03), not cosine similarities —
-keep `SCORE_THRESHOLD=0` for hybrid collections.
-
-Also part of the quality picture: retrieved chunks are deduplicated (the same
-page crawled under two URLs no longer fills two top-K slots), and linked PDFs
-are ingested (price lists, brochures). Natural next upgrades, in order of
-impact: a cross-encoder reranker (llama.cpp supports `bge-reranker-v2-m3`
-natively), structure-aware chunking, and a larger chat model.
-
-## Notes / limitations
-
-- **Embedded Qdrant (the default) is single-writer**: `ingest` and `serve` can't
-  run at the same time, and a long ingest that hits this fails only at the very
-  last step (after crawling everything) — see "Vector store" above for the fix
-  (a real Qdrant server, no Docker needed).
-- Grounding quality depends on the chat model; a 7B-class instruct model is a
-  good baseline. Small models may under-call tools.
-- Re-ingest after changing `EMBED_DIM`/`CHUNK_SIZE` (vector dimensions must match).
-- Use a genuinely multilingual embedding model (e.g. `bge-m3`) for non-English
-  sites — English-centric models like `nomic-embed-text` retrieve poorly outside
-  English, independent of how well the chat model itself handles the language.
-- **Small local chat models can occasionally degenerate** — repeating a
-  sentence, sometimes drifting into another language mid-repeat — especially
-  on vague queries with weak/ambiguous retrieval matches. `FREQUENCY_PENALTY`
-  / `PRESENCE_PENALTY` (default 0.4) and `MAX_TOKENS` (default 500) reduce and
-  bound this; a larger/stronger chat model is the more thorough fix.
-- **`/health` only checks the app + Qdrant, not the LLM servers** — the stack
-  can look healthy while chat is down. In particular, a GPU driver reset
-  (Vulkan `ErrorDeviceLost`, typically under VRAM pressure from other GPU
-  apps) leaves llama-server answering `/health` with 200 while every
-  completion fails — if the widget hangs but health is green, restart
-  llama-server. Avoid running games/heavy GPU apps next to a model that
-  nearly fills VRAM.
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+The tests need no running services: model, Qdrant, and PostgreSQL calls are
+stubbed, and the Compose file is checked statically.

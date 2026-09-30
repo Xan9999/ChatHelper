@@ -1,82 +1,290 @@
-# Full stack on one GPU machine: chat LLM + embeddings + Qdrant + the app.
-#
-#   1. Put your .gguf files in ./models/ (or set MODELS_DIR)
-#   2. Set CHAT_MODEL_FILE / EMBED_MODEL_FILE below or in .env
-#   3. docker compose up -d
-#   4. Ingest: docker compose run --rm app website-ai-helper ingest https://site.com --collection site
-#
-# GPU access requires the NVIDIA driver + nvidia-container-toolkit on the host
-# (https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/).
-# Compose reads variable defaults from this file and overrides from ./.env.
+name: ${COMPOSE_PROJECT_NAME:-chathelper}
 
 services:
-  llm:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
-    command: >
-      -m /models/${CHAT_MODEL_FILE:-Qwen3-14B-Instruct-Q4_K_M.gguf}
-      -ngl 99 -np ${LLM_SLOTS:-2} -c ${LLM_CTX:-16384} --cache-reuse 256
-      --jinja --host 0.0.0.0 --port 8080 --alias local-chat
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2.11.4-alpine}
+    environment:
+      CHAT_DOMAIN: ${CHAT_DOMAIN:?Set CHAT_DOMAIN in .env.production}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in .env.production}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
     volumes:
-      - ${MODELS_DIR:-./models}:/models:ro
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - edge
+    depends_on:
+      app:
+        condition: service_healthy
     restart: unless-stopped
-
-  embed:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
-    command: >
-      -m /models/${EMBED_MODEL_FILE:-bge-m3-Q8_0.gguf}
-      --embedding --pooling mean -ngl 99 -c 2048 -b 2048 -ub 2048
-      --host 0.0.0.0 --port 8081 --alias local-embed
-    volumes:
-      - ${MODELS_DIR:-./models}:/models:ro
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    restart: unless-stopped
-
-  qdrant:
-    image: qdrant/qdrant:latest
-    volumes:
-      - qdrant_storage:/qdrant/storage
-    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    logging: &default-logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   app:
-    build: .
-    ports:
-      - "${APP_PORT:-8000}:8000"
+    build:
+      context: .
+    image: chathelper-app:${APP_IMAGE_TAG:-local}
+    command:
+      - uvicorn
+      - chathelper.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --workers
+      - "${APP_WORKERS:-2}"
+      - --proxy-headers
+      - --forwarded-allow-ips=*
     environment:
+      DATA_DIR: /tmp/chathelper
       LLM_BASE_URL: http://llm:8080/v1
+      LLM_API_KEY: sk-local
+      LLM_MODEL: local-chat
+      LLM_EXTRA_BODY: ${LLM_EXTRA_BODY:?Set LLM_EXTRA_BODY in .env.production}
       EMBED_BASE_URL: http://embed:8081/v1
+      EMBED_API_KEY: sk-local
+      EMBED_MODEL: local-embed
+      EMBED_DIM: ${EMBED_DIM:-1024}
+      EMBED_DOC_PREFIX: ${EMBED_DOC_PREFIX:-}
+      EMBED_QUERY_PREFIX: ${EMBED_QUERY_PREFIX:-}
       QDRANT_URL: http://qdrant:6333
       QDRANT_COLLECTION: ${QDRANT_COLLECTION:-default}
-      EMBED_DIM: ${EMBED_DIM:-1024}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-chathelper}
+      POSTGRES_USER: chathelper_app
+      POSTGRES_PASSWORD_FILE: /run/secrets/app_db_password
+      DB_POOL_MIN_SIZE: ${DB_POOL_MIN_SIZE:-1}
+      DB_POOL_MAX_SIZE: ${DB_POOL_MAX_SIZE:-5}
+      DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-10}
       TOP_K: ${TOP_K:-6}
       SITE_NAME: ${SITE_NAME:-this website}
       SITE_NAMES: ${SITE_NAMES:-}
-      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
-      QA_TOKEN: ${QA_TOKEN:-}
+      SITE_STYLES: ${SITE_STYLES:-}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?Set ALLOWED_ORIGINS in .env.production}
+      QA_TOKEN_FILE: /run/secrets/qa_token
+      QA_COOKIE_SECURE: "1"
       FREQUENCY_PENALTY: ${FREQUENCY_PENALTY:-0.4}
       PRESENCE_PENALTY: ${PRESENCE_PENALTY:-0.4}
       MAX_TOKENS: ${MAX_TOKENS:-500}
+      PAGE_MAX_CHARS: ${PAGE_MAX_CHARS:-1500}
+      QUERY_REWRITE: ${QUERY_REWRITE:-1}
+      CHAT_MAX_MESSAGE_CHARS: ${CHAT_MAX_MESSAGE_CHARS:-4000}
+      CHAT_HISTORY_MAX_ITEMS: ${CHAT_HISTORY_MAX_ITEMS:-12}
+      CHAT_RATE_LIMIT_PER_MINUTE: ${CHAT_RATE_LIMIT_PER_MINUTE:-30}
+      QA_LOGIN_RATE_LIMIT_PER_MINUTE: ${QA_LOGIN_RATE_LIMIT_PER_MINUTE:-10}
+      ENABLE_DOCS: "0"
       CRAWL_MAX_PAGES: ${CRAWL_MAX_PAGES:-200}
-    volumes:
-      - app_data:/app/data
+      CRAWL_SAME_DOMAIN: ${CRAWL_SAME_DOMAIN:-1}
+      CRAWL_PDFS: ${CRAWL_PDFS:-1}
+      CRAWL_PDF_MAX_MB: ${CRAWL_PDF_MAX_MB:-20}
+      BOILERPLATE_STRIP: ${BOILERPLATE_STRIP:-1}
+      BOILERPLATE_MIN_PAGES: ${BOILERPLATE_MIN_PAGES:-4}
+      BOILERPLATE_PAGE_FRACTION: ${BOILERPLATE_PAGE_FRACTION:-0.3}
+      WIDGET_STYLES_DIR: /app/widget_styles
+      WIDGET_STRINGS_DIR: /app/widget_strings
+    secrets:
+      - app_db_password
+      - qa_token
+    expose:
+      - "8000"
+    networks:
+      - edge
+      - backend
     depends_on:
-      - llm
-      - embed
-      - qdrant
+      db-init:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_started
+      llm:
+        condition: service_started
+      embed:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=5).read()"
+      interval: 30s
+      timeout: 7s
+      retries: 5
+      # /ready fails until both model servers have loaded their GGUF files;
+      # a 9-19 GB model on a slow VPS disk can take several minutes. A too
+      # short start_period marks the app unhealthy and Caddy never starts.
+      start_period: 300s
     restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 45s
+    logging: *default-logging
+
+  postgres:
+    image: ${POSTGRES_IMAGE:-postgres:17.11-alpine3.24}
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-chathelper}
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_INITDB_ARGS: --data-checksums --auth-host=scram-sha-256
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+    shm_size: 256mb
+    stop_grace_period: 60s
+    logging: *default-logging
+
+  db-init:
+    image: ${POSTGRES_IMAGE:-postgres:17.11-alpine3.24}
+    entrypoint: ["/bin/sh", "/init-db.sh"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-chathelper}
+    secrets:
+      - postgres_password
+      - app_db_password
+    volumes:
+      - ./deploy/init-db.sh:/init-db.sh:ro
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+
+  qdrant:
+    image: ${QDRANT_IMAGE:-qdrant/qdrant:v1.19.0}
+    environment:
+      QDRANT__TELEMETRY_DISABLED: "true"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    expose:
+      - "6333"
+      - "6334"
+    networks:
+      - backend
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 60s
+    logging: *default-logging
+
+  llm:
+    image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda12-b10884}
+    command: >-
+      -m /models/${CHAT_MODEL_FILE:?Set CHAT_MODEL_FILE in .env.production}
+      -ngl 99 -np ${LLM_SLOTS:-2} -c ${LLM_CTX:-8192} --cache-reuse 256
+      --jinja --host 0.0.0.0 --port 8080 --alias local-chat
+    volumes:
+      - ${MODELS_DIR:?Set MODELS_DIR in .env.production}:/models:ro
+    expose:
+      - "8080"
+    networks:
+      - backend
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 60s
+    logging: *default-logging
+
+  embed:
+    image: ${LLAMA_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda12-b10884}
+    command: >-
+      -m /models/${EMBED_MODEL_FILE:?Set EMBED_MODEL_FILE in .env.production}
+      --embedding --pooling mean -ngl 99 -c 2048 -b 2048 -ub 2048
+      --host 0.0.0.0 --port 8081 --alias local-embed
+    volumes:
+      - ${MODELS_DIR:?Set MODELS_DIR in .env.production}:/models:ro
+    expose:
+      - "8081"
+    networks:
+      - backend
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 60s
+    logging: *default-logging
+
+networks:
+  edge:
+  backend:
+    internal: true
 
 volumes:
-  qdrant_storage:
-  app_data:
+  caddy_data:
+  caddy_config:
+  postgres_data:
+  qdrant_data:
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password.txt
+  app_db_password:
+    file: ./secrets/app_db_password.txt
+  qa_token:
+    file: ./secrets/qa_token.txt

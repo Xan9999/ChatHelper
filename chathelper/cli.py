@@ -1,4 +1,4 @@
-"""Command-line interface: `website-ai-helper <ingest|serve|init>`.
+"""Command-line interface: `chathelper <ingest|serve|init>`.
 
 Designed so ONE install serves MANY websites — give each site its own
 collection with --collection and point the widget at the right server.
@@ -10,19 +10,27 @@ import os
 from pathlib import Path
 
 _ENV_TEMPLATE = """\
-# Website-AI-helper configuration. All values are optional (sane defaults shown).
+# ChatHelper configuration. All values are optional (sane defaults shown).
 
 # Chat + embedding endpoints (any OpenAI-compatible server: llama.cpp, Ollama, ...)
 LLM_BASE_URL=http://127.0.0.1:8080/v1
 EMBED_BASE_URL=http://127.0.0.1:8081/v1
-EMBED_DIM=768
-# nomic-embed prefixes (set both to "" for a bge model)
-EMBED_DOC_PREFIX="search_document: "
-EMBED_QUERY_PREFIX="search_query: "
+# Must match the embedding model: bge-m3 = 1024 (recommended, no prefixes);
+# nomic-embed-text = 768 with EMBED_DOC_PREFIX="search_document: " and
+# EMBED_QUERY_PREFIX="search_query: ".
+EMBED_DIM=1024
+EMBED_DOC_PREFIX=
+EMBED_QUERY_PREFIX=
 
 # Vector store: empty QDRANT_URL = embedded local folder; else a Qdrant server URL
 QDRANT_URL=
+QDRANT_API_KEY=
 QDRANT_COLLECTION=default
+
+# PostgreSQL conversation logging (required by `serve`)
+DATABASE_URL=postgresql://chathelper:change-me@127.0.0.1:5432/chathelper
+QA_TOKEN=
+QA_COOKIE_SECURE=0
 
 # Identity + retrieval tuning
 SITE_NAME=this website
@@ -38,7 +46,7 @@ def _cmd_init(_args: argparse.Namespace) -> None:
         print(".env already exists — not overwriting.")
         return
     path.write_text(_ENV_TEMPLATE, encoding="utf-8")
-    print(f"Wrote {path.resolve()}. Edit it, then run `website-ai-helper ingest <url>`.")
+    print(f"Wrote {path.resolve()}. Edit it, then run `chathelper ingest <url>`.")
 
 
 def _cmd_ingest(args: argparse.Namespace) -> None:
@@ -53,8 +61,15 @@ def _cmd_ingest(args: argparse.Namespace) -> None:
     if args.site_name:
         os.environ["SITE_NAME"] = args.site_name
     # Import AFTER setting env so config picks up the overrides.
-    from website_ai_helper.ingest import crawl_and_ingest
-    crawl_and_ingest(args.url)
+    from chathelper.ingest import crawl_and_ingest
+    crawl_and_ingest(args.url, replace=args.replace)
+
+
+def _cmd_prune(args: argparse.Namespace) -> None:
+    from chathelper import qa
+    deleted = qa.prune_conversations(args.days)
+    print(f"Deleted {deleted} conversation(s) older than {args.days} days "
+          "(their messages were removed with them).")
 
 
 def _cmd_serve(args: argparse.Namespace) -> None:
@@ -68,14 +83,14 @@ def _cmd_serve(args: argparse.Namespace) -> None:
     certfile = args.ssl_certfile or os.getenv("SSL_CERTFILE") or None
     keyfile = args.ssl_keyfile or os.getenv("SSL_KEYFILE") or None
     import uvicorn
-    uvicorn.run("website_ai_helper.main:app", host=args.host, port=args.port,
+    uvicorn.run("chathelper.main:app", host=args.host, port=args.port,
                 ssl_certfile=certfile, ssl_keyfile=keyfile)
 
 
 def main() -> None:
     p = argparse.ArgumentParser(
-        prog="website-ai-helper",
-        description="Local RAG chatbot for any website + your database.",
+        prog="chathelper",
+        description="Website RAG chatbot with durable conversation logging.",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -88,9 +103,13 @@ def main() -> None:
                     help="Render pages with a headless browser (runs JavaScript) to "
                          "capture dynamic/SPA content. Needs the [render] extra.")
     pi.add_argument("--site-name", help="Human name of the site (used in answers).")
+    pi.add_argument("--replace", action="store_true",
+                    help="Drop and recreate the collection before storing, so a full "
+                         "re-crawl leaves no stale chunks. Only happens after a "
+                         "successful crawl.")
     pi.set_defaults(func=_cmd_ingest)
 
-    ps = sub.add_parser("serve", help="Run the chatbot backend + widget.")
+    ps = sub.add_parser("serve", help="Run the chatbot API and widget script.")
     ps.add_argument("--collection", help="Which knowledge base to answer from.")
     ps.add_argument("--site-name", help="Human name of the site (used in answers).")
     ps.add_argument("--host", default="127.0.0.1")
@@ -101,6 +120,12 @@ def main() -> None:
 
     pn = sub.add_parser("init", help="Write a starter .env in the current folder.")
     pn.set_defaults(func=_cmd_init)
+
+    pp = sub.add_parser("prune", help="Delete logged conversations older than N days "
+                                      "(data-retention policy).")
+    pp.add_argument("--days", type=int, required=True,
+                    help="Delete conversations that started more than this many days ago.")
+    pp.set_defaults(func=_cmd_prune)
 
     args = p.parse_args()
     args.func(args)

@@ -33,14 +33,11 @@ conversazioni dei visitatori. Non è richiesta alcuna conoscenza tecnica.
 basso a destra) e risponde alle domande dei visitatori, 24 ore su 24, come un
 addetto che conosce a memoria tutto il vostro sito.
 
-Per rispondere, l'assistente si basa su tre fonti, nell'ordine in cui vi si
+Per rispondere, l'assistente si basa su due fonti, nell'ordine in cui vi si
 può fidare di più:
 
-1. **Il vostro database in tempo reale** (se collegato) — per informazioni che
-   cambiano spesso, come prezzo, disponibilità di un prodotto o stato di un
-   ordine. Sono le informazioni più aggiornate e affidabili.
-2. **La pagina che il visitatore sta guardando** in quel momento.
-3. **I contenuti del vostro sito** — testi delle pagine, schede prodotto,
+1. **La pagina che il visitatore sta guardando** in quel momento.
+2. **I contenuti del vostro sito** — testi delle pagine, schede prodotto,
    PDF collegati (listini, brochure) — raccolti in anticipo e usati come base
    di conoscenza generale.
 
@@ -50,8 +47,8 @@ condiviso con terzi senza il vostro controllo.
 ## 2. Cosa sa fare (e cosa non sa fare)
 
 **Sa fare:**
-- Rispondere a domande sui prodotti, servizi, orari, prezzi (se collegato al
-  database), politiche del sito, come contattarvi, ecc.
+- Rispondere a domande sui prodotti, servizi, orari, prezzi pubblicati,
+  politiche del sito, come contattarvi, ecc.
 - Capire la domanda in qualsiasi lingua scriva il visitatore, e rispondere
   nella stessa lingua.
 - Suggerire e collegare la pagina giusta del sito quando è utile (link
@@ -62,9 +59,8 @@ condiviso con terzi senza il vostro controllo.
 **Non sa fare (per scelta, a garanzia della qualità):**
 - Non inventa mai prezzi, disponibilità o informazioni che non trova — se non
   sa rispondere, lo dice apertamente e suggerisce dove cercare.
-- Non esegue azioni al posto del visitatore (non effettua acquisti, non
-  modifica ordini) a meno che non sia stato specificamente configurato per
-  farlo.
+- Non esegue azioni al posto del visitatore: non effettua acquisti e non
+  consulta o modifica ordini.
 - Non sostituisce l'assistenza clienti per casi complessi o delicati — resta
   comunque un buon primo filtro per le domande più comuni.
 
@@ -127,43 +123,27 @@ non richiedono di ricreare il widget da zero.
 
 ## 5. Avviare i servizi
 
-L'assistente è composto da tre "motori" che devono essere accesi (e restare
-accesi) perché tutto funzioni. Non è necessario capire come lavorano
-internamente — basta sapere cosa fa ciascuno e in che ordine avviarli:
+L'assistente usa diversi servizi che devono restare attivi. Nella versione
+pubblicata sul server Linux vengono avviati e mantenuti da Docker Compose;
+non serve aprire un terminale separato per ciascuno:
 
 | Motore | A cosa serve, in parole semplici |
 |---|---|
 | **Qdrant** | È il "magazzino" dove restano conservati i contenuti del sito già letti — uno scaffale separato per ogni sito gestito. |
 | **Embeddings** | È il motore che sa "cercare per significato": lo usa sia quando si legge un nuovo sito, sia ogni volta che un visitatore fa una domanda, per trovare le informazioni giuste. |
 | **LLM (modello di chat)** | È il motore che scrive davvero le risposte — il "cervello" che compone il testo che il visitatore legge. |
+| **PostgreSQL** | Conserva le conversazioni per la consultazione privata; non contiene cataloghi prodotti o ordini. |
+| **ChatHelper** | Riceve le domande dal widget e coordina gli altri servizi. |
+| **Caddy** | Offre l'indirizzo HTTPS pubblico e inoltra le richieste a ChatHelper. |
 
-Si avviano da una finestra del terminale, dalla cartella del progetto, **in
-questo ordine**:
-
-```powershell
-# Windows (PowerShell)
-.\scripts\start-qdrant.ps1
-.\scripts\start-embeddings.ps1
-.\scripts\start-llm.ps1
-```
+Chi gestisce il server può verificarne lo stato dalla cartella del progetto:
 
 ```bash
-# Mac/Linux — gli stessi script, versione .sh
-./scripts/start-qdrant.sh
-./scripts/start-embeddings.sh
-./scripts/start-llm.sh
+bash scripts/deploy.sh status
 ```
 
-Ogni comando resta "in ascolto" e va lasciato aperto: non è un'operazione che
-finisce, ma un servizio che deve continuare a girare. È normale che passino
-da pochi secondi a un paio di minuti prima che ciascuno sia pronto,
-specialmente il terzo se il modello è di grandi dimensioni.
-
-Alcuni dettagli (quale modello usare, quante domande gestire nello stesso
-momento, su quale "canale" numerico ascoltare) sono regolabili, ma sono
-normalmente già impostati correttamente da chi ha configurato il servizio la
-prima volta — nell'uso quotidiano non serve toccarli. Se uno dei tre smette di
-rispondere, di solito basta richiuderlo e rilanciare lo stesso comando.
+La procedura di avvio e manutenzione è in `DEPLOYMENT.md`. Gli script
+`start-*.ps1` e `start-*.sh` servono solo per prove locali senza Docker.
 
 ## 6. Scansionare un sito web (comando `ingest`)
 
@@ -171,7 +151,7 @@ Prima che l'assistente possa rispondere sui contenuti di un sito, il sito va
 "letto" una volta con il comando `ingest`. Esempio minimo:
 
 ```bash
-website-ai-helper ingest https://www.vostrosito.it --collection vostrosito
+chathelper ingest https://www.vostrosito.it --collection vostrosito
 ```
 
 Cosa fa: apre l'indirizzo indicato, segue via via i link interni del sito
@@ -179,6 +159,8 @@ pagina dopo pagina, scarica anche i PDF collegati (ad esempio listini o
 brochure), e alla fine memorizza tutto sotto il nome scelto (qui
 `vostrosito`) — lo stesso nome che comparirà nello snippet del widget (sezione
 4) e nella pagina di revisione delle conversazioni (sezione 10).
+Nel deployment Docker si usa `bash scripts/deploy.sh ingest` seguito dagli
+stessi argomenti, dopo che lo stack è stato avviato.
 
 Opzioni disponibili, da aggiungere dopo l'indirizzo del sito:
 
@@ -190,19 +172,25 @@ Opzioni disponibili, da aggiungere dopo l'indirizzo del sito:
 | `--render` | Da usare se il sito costruisce i contenuti con JavaScript (ad esempio applicazioni "a pagina singola" moderne): fa "vedere" ogni pagina come farebbe un browser, così legge anche il testo che compare solo dopo il caricamento. Richiede un piccolo componente aggiuntivo installato una tantum (chiedere assistenza se serve). |
 | `--site-name "Nome"` | Il nome con cui l'assistente si presenta nelle risposte (ad esempio "assistente di Nome"). |
 
-Se un sito è già stato letto in passato e si vuole rifare la scansione da
-zero (ad esempio dopo grandi cambiamenti al sito), va prima svuotato il suo
-"scaffale" esistente — chiedere a chi gestisce il servizio, oppure vedere la
-documentazione tecnica (`README.md`). Rifare la scansione senza questo
-passaggio non aggiorna correttamente i contenuti, ne crea solo di duplicati.
+Rilanciare la scansione di un sito già letto è sicuro: le pagine rilette
+sostituiscono la propria versione precedente, senza creare duplicati. Le
+pagine che nel frattempo sono state eliminate dal sito restano però in
+memoria finché non si fa una scansione "da zero", che svuota e ricrea lo
+scaffale del sito solo dopo che la nuova lettura è andata a buon fine:
+
+```bash
+chathelper ingest https://www.vostrosito.it --collection vostrosito --replace
+```
+
+(`--replace` va aggiunto anche quando si usa `bash scripts/deploy.sh ingest`).
 
 ## 7. Avviare l'assistente (comando `serve`)
 
-Una volta letto almeno un sito, questo comando accende davvero l'assistente,
-pronto a rispondere alle domande:
+Per prove locali, una volta letto almeno un sito e avviato PostgreSQL, questo
+comando accende l'API dell'assistente:
 
 ```bash
-website-ai-helper serve --collection vostrosito
+chathelper serve --collection vostrosito
 ```
 
 Opzioni disponibili:
@@ -211,29 +199,29 @@ Opzioni disponibili:
 |---|---|
 | `--collection NOME` | Quale sito servire — deve corrispondere al nome usato con `ingest`. |
 | `--site-name "Nome"` | Come sopra: il nome con cui l'assistente si presenta. |
-| `--host` | Chi può collegarsi al servizio: il valore predefinito (`127.0.0.1`) significa "solo questo stesso computer"; `0.0.0.0` apre l'accesso anche da altri computer — necessario quando il sito è online e non solo in prova locale. |
+| `--host` | Chi può collegarsi al servizio: il valore predefinito (`127.0.0.1`) significa "solo questo stesso computer". Nel deployment Docker l'indirizzo interno è configurato in Compose e solo Caddy è pubblico. |
 | `--port NUMERO` | Il "canale" numerico su cui il servizio risponde (8000 di default). Va cambiato solo se quel numero è già occupato da qualcos'altro sullo stesso computer. |
 | `--ssl-certfile` / `--ssl-keyfile` | Per far parlare l'assistente direttamente in connessione sicura (HTTPS), indicando i due file del certificato. Non necessario se davanti c'è già un altro sistema che se ne occupa (soluzione comune nelle installazioni più curate). |
 
-Un'installazione serve **un sito alla volta per ogni comando `serve`**: per
-gestire più siti insieme, si avviano più comandi in parallelo, ciascuno con la
-propria collezione e un numero di canale diverso — impostazione già pronta
-quando si aggiungono più clienti allo stesso servizio.
+Una sola installazione può servire **più siti insieme**: ogni sito ha la
+propria collezione Qdrant e lo snippet del widget invia il relativo
+`client_id`. Non è necessario avviare un processo separato per sito.
 
 ## 8. Preparazione iniziale (comando `init`)
 
-Solo la primissima volta che si configura l'applicazione su un nuovo
-computer, questo comando
+Solo per una prova locale, la primissima volta che si configura
+l'applicazione su un nuovo computer, questo comando
 
 ```bash
-website-ai-helper init
+chathelper init
 ```
 
-crea un file di impostazioni di base nella cartella del progetto, da compilare
+crea un file `.env` di base nella cartella del progetto, da compilare
 con le informazioni necessarie (dove si trovano i tre motori della sezione 5,
 quale modello usare, e così via). Questo passaggio — come la scelta e
 l'installazione dei modelli stessi — viene normalmente svolto una sola volta
-da chi installa il servizio: non fa parte dell'uso quotidiano.
+da chi installa il servizio: non fa parte dell'uso quotidiano. Nel deployment
+Docker si usa invece `bash scripts/deploy.sh prepare` e `.env.production`.
 
 ## 9. Tenere aggiornati i contenuti
 
@@ -245,10 +233,10 @@ cambiano in modo sostanziale; se invece il servizio è gestito da qualcun
 altro per conto vostro, segnalate le modifiche importanti per richiedere un
 aggiornamento anticipato.
 
-Le informazioni che cambiano di continuo (prezzo, disponibilità in magazzino,
-stato di un ordine) non dipendono da questa scansione periodica: se il vostro
-database è collegato, l'assistente le legge **in tempo reale** a ogni domanda,
-quindi sono sempre corrette anche tra una scansione e l'altra.
+Le informazioni che cambiano spesso, come prezzi e disponibilità, sono
+affidabili solo quanto l'ultima scansione oppure il testo della pagina che il
+visitatore sta guardando. Dopo cambiamenti importanti conviene quindi
+rilanciare `ingest`.
 
 ## 10. Consultare le conversazioni dei visitatori
 
@@ -261,7 +249,7 @@ può leggere le conversazioni.
 L'indirizzo ha questa forma:
 
 ```
-https://vostro-indirizzo/qa?token=IL-VOSTRO-CODICE
+https://vostro-indirizzo/qa/login
 ```
 
 Cosa si trova:
@@ -272,7 +260,7 @@ Cosa si trova:
 - Se gestite **più siti** con lo stesso servizio (ognuno avviato come nella
   sezione 7), in alto trovate un elenco di collegamenti (uno per sito) per
   vedere solo le conversazioni di un sito alla volta — ad esempio aggiungendo
-  il codice del sito in fondo all'indirizzo: `.../qa/vostro-codice-sito?token=...`
+  il codice del sito in fondo all'indirizzo: `.../qa/vostro-codice-sito`
 - Cliccando su una conversazione (**view**) si apre la trascrizione completa,
   leggibile come un dialogo (visitatore / assistente), con i tempi di risposta.
   È disponibile anche **txt** per scaricarla come semplice file di testo.
@@ -292,9 +280,11 @@ solo come approfondimento. Se notate risposte che rimandano soltanto a una
 pagina senza spiegare nulla, segnalatelo: probabilmente quel contenuto non è
 ancora ben coperto dal sito, oppure serve un piccolo aggiustamento.
 
-**Uno dei tre "motori" (sezione 5) si è bloccato — devo reinstallare tutto?**
-No: di solito basta richiudere quel comando e rilanciarlo. Se il problema si
-ripete spesso, segnalatelo a chi gestisce il servizio.
+**Uno dei servizi (sezione 5) si è bloccato — devo reinstallare tutto?**
+No: nella versione pubblicata sul server i servizi vengono riavviati
+automaticamente; in una prova locale basta richiudere quel comando e
+rilanciarlo. Se il problema si ripete spesso, segnalatelo a chi gestisce il
+servizio.
 
 **L'assistente può sbagliare o inventare cose?**
 È stato impostato per non inventare mai fatti, prezzi o disponibilità: se non
@@ -319,7 +309,12 @@ con quel nuovo codice.
 
 **Le conversazioni dei visitatori sono al sicuro?**
 Sono conservate privatamente e consultabili solo tramite il codice di accesso
-personale — nessun dato viene condiviso con terzi.
+personale. Chi gestisce il servizio può impostare un periodo di conservazione
+(ad esempio 90 giorni), dopo il quale le conversazioni vengono cancellate
+automaticamente. Se il "cervello" (modello di chat) è un servizio esterno
+anziché un server vostro, le domande dei visitatori e il testo della pagina
+che stanno guardando vengono inviati a quel fornitore: va indicato
+nell'informativa privacy del sito.
 
 ## 12. Assistenza
 

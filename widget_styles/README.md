@@ -11,7 +11,7 @@ rules win the cascade without `!important`. A collection with no file here
 just gets the default look — nothing to configure for sites that don't need
 customizing.
 
-Useful hooks already in the base markup (see `website_ai_helper/web/widget.js`
+Useful hooks already in the base markup (see `chathelper/web/widget.js`
 for the full structure): `#wah-toggle` (the floating button), `#wah-panel`
 (the chat window), `.wah-hdr`, `.wah-msgs`, `.wah-msg.user`/`.wah-msg.bot`
 bubbles, `.wah-composer`. The base stylesheet also defines CSS custom

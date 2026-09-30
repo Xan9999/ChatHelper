@@ -2,7 +2,7 @@
 # Not required — you can use any OpenAI-compatible endpoint (Ollama, a remote
 # server, etc.). Configure via the project-root .env file (KEY=value):
 #   LLAMA_SERVER   = full path to llama-server(.exe)
-#   CHAT_MODEL     = path to a .gguf chat model (instruct, tool-capable)
+#   CHAT_MODEL     = path to an instruct .gguf chat model
 #   CPU_MOE        = "1" to keep Mixture-of-Experts weights on CPU/RAM instead
 #                    of VRAM — lets a big MoE model run on a GPU with less VRAM
 #                    than the full model size. Default "0": measured on a GTX

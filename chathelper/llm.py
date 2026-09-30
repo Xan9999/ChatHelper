@@ -3,10 +3,22 @@ from __future__ import annotations
 
 from openai import OpenAI
 
-from website_ai_helper import config
+from chathelper import config
 
-_chat_client = OpenAI(base_url=config.LLM_BASE_URL, api_key=config.LLM_API_KEY)
-_embed_client = OpenAI(base_url=config.EMBED_BASE_URL, api_key=config.EMBED_API_KEY)
+# Explicit timeouts: the SDK default is 10 minutes, which would pin a worker
+# thread (and the visitor's spinner) on a stuck model server for that long.
+_chat_client = OpenAI(
+    base_url=config.LLM_BASE_URL,
+    api_key=config.LLM_API_KEY,
+    timeout=config.LLM_TIMEOUT,
+    max_retries=1,
+)
+_embed_client = OpenAI(
+    base_url=config.EMBED_BASE_URL,
+    api_key=config.EMBED_API_KEY,
+    timeout=config.EMBED_TIMEOUT,
+    max_retries=2,
+)
 
 
 def chat_client() -> OpenAI:
