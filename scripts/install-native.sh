@@ -170,6 +170,16 @@ fi
 chown root:chathelper "$APP/.env"
 chmod 640 "$APP/.env"
 
+step "Command wrapper"
+# Lets root type `chathelper ingest ...` anywhere: switches to the service
+# user, enters the app directory (where .env lives) and uses the venv.
+cat > /usr/local/bin/chathelper <<WRAP
+#!/usr/bin/env bash
+exec runuser -u chathelper -- env -C "$APP" "$VENV/bin/chathelper" "\$@"
+WRAP
+chmod 755 /usr/local/bin/chathelper
+/usr/local/bin/chathelper --help | head -1
+
 step "systemd units"
 install -m 644 "$APP/deploy/native/qdrant.service" /etc/systemd/system/qdrant.service
 install -m 644 "$APP/deploy/native/chathelper.service" /etc/systemd/system/chathelper.service

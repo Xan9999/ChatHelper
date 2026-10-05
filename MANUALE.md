@@ -337,18 +337,27 @@ programma `chathelper`, tutte le sue opzioni e i valori usati quando
 un'opzione viene omessa. Ogni comando accetta `-h` (o `--help`) e stampa
 l'elenco delle proprie opzioni.
 
-**Dove e come si lanciano.** I comandi leggono la configurazione dal file
-`.env` della cartella in cui vengono eseguiti. Sul server di produzione
-(`srv.tallweb.eu`) il programma è `/srv/chathelper/venv/bin/chathelper`, la
-cartella è `/srv/chathelper/app` e il comando va eseguito come utente
-`chathelper`, cioè:
+**Dove e come si lanciano.** Sul server di produzione (`srv.tallweb.eu`),
+collegati come `root`, basta scrivere:
+
+```bash
+chathelper <comando> <opzioni>
+```
+
+Dietro le quinte `/usr/local/bin/chathelper` è un piccolo script che: passa
+all'utente di servizio `chathelper` (il programma legge siti esterni e non
+deve girare come root), entra nella cartella `/srv/chathelper/app` (dove si
+trova il file `.env` con la configurazione) e usa l'ambiente Python
+dell'applicazione `/srv/chathelper/venv` (il Python di sistema è troppo
+vecchio e non va toccato). La forma estesa, equivalente, è:
 
 ```bash
 runuser -u chathelper -- bash -c 'cd /srv/chathelper/app && /srv/chathelper/venv/bin/chathelper <comando> <opzioni>'
 ```
 
 Su un computer di prova, dopo `setup.sh`/`setup.ps1` e l'attivazione
-dell'ambiente virtuale, basta `chathelper <comando> <opzioni>`.
+dell'ambiente virtuale, vale di nuovo il semplice `chathelper <comando>
+<opzioni>`.
 
 ### 13.1 `chathelper ingest` — leggere o rileggere un sito
 

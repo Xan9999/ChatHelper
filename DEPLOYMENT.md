@@ -313,15 +313,17 @@ systemctl status chathelper qdrant postgresql
 journalctl -u chathelper -n 100 -f
 curl -fsS https://srv.tallweb.eu/ready
 
-# ingest / refresh a site (runs as the app user; use tmux for large crawls)
-runuser -u chathelper -- bash -c 'cd /srv/chathelper/app && /srv/chathelper/venv/bin/chathelper ingest https://www.ricambiribi.com --collection ricambiribi --site-name "Ricambi Ribi" --max-pages 500'
+# ingest / refresh a site. /usr/local/bin/chathelper (installed by
+# install-native.sh) switches to the app user, enters the app directory and
+# uses the venv; use tmux for large crawls.
+chathelper ingest https://www.ricambiribi.com --collection ricambiribi --site-name "Ricambi Ribi" --max-pages 500
 
 # update to the latest commit
 cd /srv/chathelper/app && git pull --ff-only && /srv/chathelper/venv/bin/pip install -q -e . && systemctl restart chathelper
 
 # backup (PostgreSQL dump + Qdrant snapshots, keeps the newest 14) and retention
 bash /srv/chathelper/app/scripts/backup-native.sh
-runuser -u chathelper -- bash -c 'cd /srv/chathelper/app && /srv/chathelper/venv/bin/chathelper prune --days 90'
+chathelper prune --days 90
 ```
 
 Suggested root crontab:
