@@ -24,6 +24,7 @@ conversazioni dei visitatori. Non è richiesta alcuna conoscenza tecnica.
 10. [Consultare le conversazioni dei visitatori](#10-consultare-le-conversazioni-dei-visitatori)
 11. [Domande frequenti](#11-domande-frequenti)
 12. [Assistenza](#12-assistenza)
+13. [Riferimento completo dei comandi](#13-riferimento-completo-dei-comandi)
 
 ---
 
@@ -174,6 +175,10 @@ Opzioni disponibili, da aggiungere dopo l'indirizzo del sito:
 | `--all-domains` | Normalmente la lettura resta all'interno del sito di partenza; con questa opzione segue i link anche verso altri siti collegati. |
 | `--render` | Da usare se il sito costruisce i contenuti con JavaScript (ad esempio applicazioni "a pagina singola" moderne): fa "vedere" ogni pagina come farebbe un browser, così legge anche il testo che compare solo dopo il caricamento. Richiede un piccolo componente aggiuntivo installato una tantum (chiedere assistenza se serve). |
 | `--site-name "Nome"` | Il nome con cui l'assistente si presenta nelle risposte (ad esempio "assistente di Nome"). |
+| `--replace` | Svuota e ricrea da zero lo "scaffale" del sito, ma solo dopo che la nuova scansione è riuscita (vedi sotto). |
+
+Il significato dettagliato di ogni opzione, con i valori predefiniti, è nella
+sezione 13.
 
 Rilanciare la scansione di un sito già letto è sicuro: le pagine rilette
 sostituiscono la propria versione precedente, senza creare duplicati. Le
@@ -324,3 +329,163 @@ nell'informativa privacy del sito.
 Per qualsiasi domanda su installazione, aggiornamenti dei contenuti, nuovi
 siti da collegare, o problemi tecnici, contattate chi vi ha fornito il
 servizio.
+
+## 13. Riferimento completo dei comandi
+
+Questa sezione è per chi gestisce il servizio. Elenca ogni comando del
+programma `chathelper`, tutte le sue opzioni e i valori usati quando
+un'opzione viene omessa. Ogni comando accetta `-h` (o `--help`) e stampa
+l'elenco delle proprie opzioni.
+
+**Dove e come si lanciano.** I comandi leggono la configurazione dal file
+`.env` della cartella in cui vengono eseguiti. Sul server di produzione
+(`srv.tallweb.eu`) il programma è `/srv/chathelper/venv/bin/chathelper`, la
+cartella è `/srv/chathelper/app` e il comando va eseguito come utente
+`chathelper`, cioè:
+
+```bash
+runuser -u chathelper -- bash -c 'cd /srv/chathelper/app && /srv/chathelper/venv/bin/chathelper <comando> <opzioni>'
+```
+
+Su un computer di prova, dopo `setup.sh`/`setup.ps1` e l'attivazione
+dell'ambiente virtuale, basta `chathelper <comando> <opzioni>`.
+
+### 13.1 `chathelper ingest` — leggere o rileggere un sito
+
+Sintassi: `chathelper ingest URL [opzioni]`
+
+| Argomento / opzione | Cosa fa | Se omesso |
+|---|---|---|
+| `URL` (obbligatorio) | Indirizzo da cui parte la lettura, ad esempio `https://www.vostrosito.it`. La lettura segue i link interni partendo da qui; conviene indicare la home page. | — |
+| `--collection NOME` | Nome dello "scaffale" (collezione) in cui salvare il sito. È lo stesso valore da usare come `client_id` nello snippet del widget. Ammessi lettere, cifre, `-` e `_`. | Il valore di `QDRANT_COLLECTION` nel file `.env` (sul server: `tallweb`). Con più siti va sempre indicato. |
+| `--max-pages N` | Numero massimo di pagine (HTML e PDF) lette in questa esecuzione. Raggiunto il limite la lettura si ferma anche se restano link da seguire. | `CRAWL_MAX_PAGES` del `.env` (sul server: 200). |
+| `--all-domains` | Segue anche i link verso altri domini. Da usare solo se i contenuti del sito sono distribuiti su più domini: altrimenti la lettura esce dal sito e spreca il budget di pagine. | Resta sul dominio di partenza; `www.sito.it` e `sito.it` contano come lo stesso sito. |
+| `--render` | Apre ogni pagina in un browser invisibile (Chromium) ed esegue il JavaScript prima di leggerla: serve per i siti che costruiscono i contenuti via script. Più lento. Richiede, una tantum, `pip install "chathelper[render]"` e `playwright install chromium`. Il tempo di attesa per pagina è `CRAWL_RENDER_WAIT_MS` (5000 ms). | Lettura semplice del codice HTML, senza eseguire script. |
+| `--site-name "Nome"` | Nome del sito usato nei messaggi di questa esecuzione. In produzione, con più siti, il nome usato nelle risposte viene da `SITE_NAMES` nel `.env` (`collezione=Nome,...`), non da questa opzione. | `SITE_NAME` del `.env`. |
+| `--replace` | Dopo una scansione **riuscita**, svuota la collezione e la ricrea con i soli contenuti appena letti: elimina le pagine che non esistono più sul sito. Se la scansione non trova nulla, il comando si ferma senza toccare la collezione esistente. | Le pagine rilette sostituiscono la propria versione precedente; le pagine sparite dal sito restano in memoria. |
+
+Cosa succede, in ordine, quando si lancia `ingest`:
+
+1. Verifica che Qdrant e il servizio di embedding rispondano; se uno dei due
+   è irraggiungibile si ferma subito, prima di iniziare a leggere.
+2. Legge il sito pagina per pagina. Vengono saltati automaticamente: i file
+   binari (immagini, archivi, video, font, documenti Office), le pagine più
+   grandi di `CRAWL_MAX_PAGE_MB` (5 MB), i PDF più grandi di
+   `CRAWL_PDF_MAX_MB` (20 MB) e i PDF senza testo (scansioni). I PDF vengono
+   letti solo se `CRAWL_PDFS=1`. Dagli indirizzi vengono tolti i parametri di
+   tracciamento (`utm_*`, `fbclid`, `gclid`, ...) e i controlli di
+   ordinamento/filtro dei negozi (`orderby`, `per_page`, `stock_status`,
+   `min_price`, `max_price`, `filter_*`, `add-to-cart`), così la stessa pagina
+   non viene letta più volte.
+3. Rimuove le righe ripetute su molte pagine (menu, footer, avvisi cookie)
+   secondo `BOILERPLATE_STRIP`, `BOILERPLATE_MIN_PAGES` (4) e
+   `BOILERPLATE_PAGE_FRACTION` (0.3).
+4. Con `--replace`, a questo punto ricrea la collezione.
+5. Divide il testo in blocchi di `CHUNK_SIZE` caratteri (800) sovrapposti di
+   `CHUNK_OVERLAP` (160), calcola gli embedding e li salva. Ogni blocco ha un
+   identificativo derivato dall'indirizzo della pagina e dalla sua posizione:
+   per questo una rilettura non crea duplicati.
+
+Esempi:
+
+```bash
+# prima lettura di un sito, al massimo 500 pagine
+chathelper ingest https://www.vostrosito.it --collection vostrosito --max-pages 500
+
+# aggiornamento completo "da zero" dopo grandi cambiamenti al sito
+chathelper ingest https://www.vostrosito.it --collection vostrosito --max-pages 500 --replace
+
+# sito costruito interamente in JavaScript
+chathelper ingest https://app.vostrosito.it --collection vostrosito --render
+```
+
+### 13.2 `chathelper serve` — avviare l'API per prove locali
+
+Sintassi: `chathelper serve [opzioni]`
+
+| Opzione | Cosa fa | Se omessa |
+|---|---|---|
+| `--collection NOME` | Collezione usata quando il widget non invia alcun `client_id`. Le richieste con `client_id` usano comunque la collezione indicata dal widget. | `QDRANT_COLLECTION` del `.env`. |
+| `--site-name "Nome"` | Nome del sito per le risposte della collezione predefinita. | `SITE_NAME` del `.env`. |
+| `--host INDIRIZZO` | Interfaccia di rete su cui ascoltare. `127.0.0.1` = solo questo computer; `0.0.0.0` = tutte le interfacce (da usare solo dietro un firewall o un proxy). | `127.0.0.1` |
+| `--port NUMERO` | Porta TCP su cui ascoltare. | `8000` |
+| `--ssl-certfile FILE` | Certificato (catena PEM) per servire direttamente in HTTPS. Non serve quando davanti c'è Apache, Caddy o nginx che fa già HTTPS. Equivalente alla variabile `SSL_CERTFILE`. | HTTP semplice |
+| `--ssl-keyfile FILE` | Chiave privata PEM abbinata al certificato. Equivalente a `SSL_KEYFILE`. | — |
+
+**In produzione `serve` non si usa.** Sul server il servizio `chathelper`
+(systemd) avvia direttamente il server web Uvicorn con questa riga, i cui
+parametri significano:
+
+```
+uvicorn chathelper.main:app --host 127.0.0.1 --port 8000 --workers 2 --proxy-headers --forwarded-allow-ips=127.0.0.1
+```
+
+| Parametro | Significato |
+|---|---|
+| `chathelper.main:app` | L'applicazione da servire (modulo `chathelper.main`, oggetto `app`). |
+| `--host 127.0.0.1` | Ascolta solo in locale: dall'esterno si passa sempre da Apache in HTTPS. |
+| `--port 8000` | Porta interna a cui Apache inoltra le richieste. |
+| `--workers 2` | Due processi in parallelo per servire più visitatori contemporaneamente. |
+| `--proxy-headers` | Legge gli header `X-Forwarded-*` inviati da Apache, così l'app conosce l'indirizzo IP reale del visitatore (usato dai limiti di richieste al minuto). |
+| `--forwarded-allow-ips=127.0.0.1` | Fida di quegli header solo quando arrivano da Apache sulla stessa macchina. |
+
+### 13.3 `chathelper init` — creare un file `.env` di partenza
+
+Sintassi: `chathelper init` (nessuna opzione). Scrive un file `.env` con i
+valori predefiniti nella cartella corrente. Se il file esiste già non lo
+tocca e lo segnala. Serve solo per una prima installazione su un nuovo
+computer.
+
+### 13.4 `chathelper prune` — cancellare le conversazioni vecchie
+
+Sintassi: `chathelper prune --days N`
+
+| Opzione | Cosa fa |
+|---|---|
+| `--days N` (obbligatoria) | Cancella le conversazioni iniziate più di `N` giorni fa, insieme ai loro messaggi. `N` deve essere almeno 1. Stampa quante conversazioni ha eliminato. |
+
+Richiede l'accesso a PostgreSQL configurato nel `.env`. Sul server viene
+eseguito automaticamente ogni notte alle 04:15 con `--days 90`
+(`/etc/cron.d/chathelper`): cambiare quel numero per modificare il periodo
+di conservazione.
+
+### 13.5 Backup della base di conoscenza
+
+Sintassi: `python -m chathelper.backup_qdrant CARTELLA`
+
+| Argomento | Cosa fa |
+|---|---|
+| `CARTELLA` (obbligatoria) | Cartella di destinazione, creata se non esiste. Per ogni collezione crea un'istantanea (snapshot) in Qdrant, la scarica qui, poi elimina la copia temporanea sul server Qdrant. Scrive anche `manifest.json` con l'elenco dei file, le dimensioni e la data. |
+
+Richiede `QDRANT_URL` nel `.env` (non funziona in modalità "cartella
+locale"). Sul server lo esegue lo script `scripts/backup-native.sh`, che
+salva anche un dump di PostgreSQL e le somme di controllo in
+`/srv/chathelper/backups/<data-ora>/` e conserva gli ultimi 14 backup
+(variabile `KEEP`); gira ogni notte alle 03:15.
+
+### 13.6 Script per chi amministra il server
+
+| Comando | Cosa fa |
+|---|---|
+| `bash scripts/install-native.sh` | Installa o riallinea tutto il necessario sul server (Python, PostgreSQL, Qdrant, l'applicazione, i servizi systemd) tranne Apache. Si può rilanciare senza danni. Variabili opzionali: `CH_BASE` (cartella base, `/srv/chathelper`), `CH_REPO` (indirizzo Git), `QDRANT_VERSION`. |
+| `bash scripts/backup-native.sh` | Backup completo (vedi 13.5). `KEEP=N` cambia quanti backup conservare. |
+| `systemctl status chathelper` / `systemctl restart chathelper` | Stato / riavvio dell'assistente. Il riavvio è necessario dopo ogni modifica al file `.env`. |
+| `journalctl -u chathelper -n 100 -f` | Ultime 100 righe di log dell'assistente, in aggiornamento continuo (`Ctrl+C` per uscire). |
+| `curl -fsS https://srv.tallweb.eu/ready` | Verifica dall'esterno che database, Qdrant e i servizi del modello rispondano. |
+| `cd /srv/chathelper/app && git pull --ff-only && /srv/chathelper/venv/bin/pip install -q -e . && systemctl restart chathelper` | Aggiorna l'applicazione all'ultima versione pubblicata. |
+| `bash scripts/deploy.sh <azione>` | Solo per l'installazione alternativa con Docker Compose (non usata su `srv.tallweb.eu`). Azioni: `prepare`, `validate`, `up`, `update`, `backup`, `restart`, `status`, `logs [servizio]`, `ingest URL [opzioni di ingest]`, `prune --days N`, `down`. |
+
+### 13.7 Impostazioni del file `.env` che influenzano i comandi
+
+L'elenco completo, con commenti, è in `.env.example`. Le più rilevanti per i
+comandi di questa sezione:
+
+| Variabile | Significato | Predefinito |
+|---|---|---|
+| `QDRANT_COLLECTION` | Collezione usata quando `--collection` / `client_id` mancano. | `default` |
+| `CRAWL_MAX_PAGES`, `CRAWL_SAME_DOMAIN`, `CRAWL_RENDER`, `CRAWL_PDFS`, `CRAWL_PDF_MAX_MB`, `CRAWL_MAX_PAGE_MB` | Limiti e modalità della lettura (le opzioni di `ingest` le sovrascrivono per una singola esecuzione). | 50 / 1 / 0 / 1 / 20 / 5 |
+| `SITE_NAME`, `SITE_NAMES`, `SITE_STYLES` | Nome del sito nelle risposte; nomi e tono per collezione (`collezione=valore`, separati da `,` per i nomi e da `|` per i toni). | `this website` / vuoto / vuoto |
+| `ALLOWED_ORIGINS` | Siti (con `https://`) autorizzati a usare il widget: ogni nuovo sito va aggiunto qui, seguito da un riavvio. | vuoto = tutti (solo per prove) |
+| `TOP_K` | Quanti blocchi di testo vengono recuperati per ogni domanda. | 3 (sul server 6) |
+| `LLM_MODEL`, `EMBED_MODEL`, `EMBED_DIM` | Modello di chat, modello di embedding e sua dimensione. Cambiare il modello di embedding richiede di rileggere tutti i siti con `--replace`. | — |
+| `QA_TOKEN` / `QA_TOKEN_FILE` | Codice di accesso alla pagina delle conversazioni; vuoto = pagina disattivata. | vuoto |
