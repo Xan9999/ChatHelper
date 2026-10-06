@@ -197,14 +197,7 @@ works just as well.
 | `language` | `en`, `it`, `sl` | `en` | Language of the widget's own labels only. The assistant always answers in the language the visitor writes in. |
 | `position` | `left`, `right` | `right` | Bottom corner for the button and the panel. |
 | `accent` | hex colour `#rgb` to `#rrggbbaa`, URL-encoded (`%23f17023`) | `#3b5bdb` | Header, send button, visitor bubbles and link colour. Malformed values are ignored. |
-| `sources` | `1` | off | Shows the "Sources: [1] [2]" links under each answer. A testing aid, hidden for visitors. |
-
-To inspect sources on a live client site without touching its snippet, open
-the browser console on that site and run
-`localStorage.setItem("chathelper.sources", "1")`; reload, and the links
-appear for that browser only. `"0"` forces them off even if the snippet has
-`sources=1`; `localStorage.removeItem("chathelper.sources")` returns to the
-snippet's setting.
+| `sources` | `1` | off | Shows the "Sources: [1] [2]" links under each answer. A testing aid, hidden for visitors; see [5. The sources line](#5-the-sources-line). |
 
 ### 2. Per-site CSS: `widget_styles/<client_id>.css`
 
@@ -283,6 +276,26 @@ SITE_STYLES=ricambiribi=Tono diretto e professionale, senza emoji.|adr=Tono cord
 Both live in the server's `.env` (`/srv/chathelper/app/.env` on the native
 install, `.env.production` for Compose) and need `systemctl restart chathelper`
 (or `deploy.sh restart`) to apply.
+
+### 5. The sources line
+
+Under every answer the backend sends the pages it retrieved, ranked best
+first, and the widget can show them as a "Sources: [1] [2] [3]" line of links.
+This is a testing aid for checking *why* the assistant answered as it did; it
+is hidden from visitors by default and the answer text never contains a
+sources list either. Three ways to control it, from broadest to narrowest:
+
+| Scope | How | Notes |
+|---|---|---|
+| Whole site | add `&sources=1` to the script URL | The six-argument wrapper has no slot for it (it builds the query itself), so use the plain tag form: `<script async src="https://srv.tallweb.eu/widget.js?client_id=tallweb&language=it&sources=1"></script>` |
+| One browser, any site | in that site's browser console run `localStorage.setItem("chathelper.sources", "1")`, then reload | Nothing on the client site changes; only that browser shows the links. `"0"` forces them off even where the snippet has `sources=1`. `localStorage.removeItem("chathelper.sources")` goes back to the snippet's setting. |
+| Appearance | CSS on `.chathelper-sources` and its `a` elements | Default colour comes from `--chathelper-muted`, links from `--chathelper-accent`. Example: `.chathelper-sources { display: none; }` hides it unconditionally; `.chathelper-sources a { font-weight: 600; }` restyles the numbers. |
+
+The browser setting always wins over the snippet. The sources event is sent
+regardless of these switches, so enabling the line never changes what the
+model is asked or how it answers. Each link is the crawled page the excerpt
+came from; `[1]` is the strongest match. Sources are not stored in the QA
+conversation log.
 
 ### How changes reach visitors
 
