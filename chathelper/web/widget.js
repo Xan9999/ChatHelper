@@ -1,5 +1,5 @@
 /* ChatHelper — self-injecting chat widget.
- * Loaded via a single async <script> tag (see README "Embedding the widget"):
+ * Loaded via a single async <script> tag (see README "Customizing the widget"):
  *   <script>
  *   !function(d,u,i,l,p,a){
  *       var s=d.createElement("script");s.async=1;
@@ -32,7 +32,7 @@
  * changes needed. Same idea for the UI TEXT (title/subtitle/placeholder/
  * send/unreachable message): drop <WIDGET_STRINGS_DIR>/<client_id>.json
  * (any subset of those keys) — served at GET /widget-strings.json?client_id=...
- * and merged over the language defaults below. See README "Embedding the widget".
+ * and merged over the language defaults below. See README "Customizing the widget".
  */
 (function () {
   "use strict";

@@ -150,12 +150,12 @@ site's footer, replacing the hostname and collection as needed:
 </script>
 ```
 
-`language` changes widget labels (`en`, `it`, `sl`); the assistant responds in
-the visitor's question language. Optional `position` (`left`/`right`) and
-`accent` (hex color) customize the appearance. Per-collection CSS and UI text
-can also be committed under `widget_styles/<client_id>.css` and
-`widget_strings/<client_id>.json`. Set `ALLOWED_ORIGINS` to the exact origins
-hosting the widget, e.g. `https://tallweb.net,https://www.tallweb.net`.
+The address must end in `/widget.js`; a bare hostname returns the JSON status
+page and the browser refuses to run it as a script. Set `ALLOWED_ORIGINS` to
+the exact origins hosting the widget, e.g.
+`https://tallweb.net,https://www.tallweb.net`, and restart the app after
+changing it. Labels, colours, position, per-site CSS and texts are covered in
+[Customizing the widget](#customizing-the-widget).
 
 The `client_id` is a selector, not an authentication mechanism: collections
 should contain only content safe for public visitors. A `client_id` that does
@@ -175,6 +175,127 @@ bash scripts/deploy.sh ingest https://tallweb.net --collection tallweb --replace
 
 Collections created by versions before hybrid retrieval (dense-only) are still
 served, but `--replace` is also the way to upgrade them to the current schema.
+
+## Customizing the widget
+
+One `widget.js` serves every site. What a visitor sees is decided, in this
+order of effort, by the snippet's query parameters, an optional per-site CSS
+file, an optional per-site text file, and two `.env` settings that shape the
+answers themselves.
+
+### 1. Snippet parameters
+
+The wrapper in the snippet above takes up to six arguments:
+`(document, widgetUrl, client_id, language, position, accent)`. They end up as
+query parameters on the script URL, which is what the widget actually reads,
+so a hand-written `<script src="https://srv.tallweb.eu/widget.js?client_id=tallweb&language=it&position=left&accent=%23f17023">`
+works just as well.
+
+| Parameter | Values | Default | Effect |
+|---|---|---|---|
+| `client_id` | collection name | the server's `QDRANT_COLLECTION` | Which site's knowledge base answers, and which CSS/text overrides load. Unknown names get HTTP 404. |
+| `language` | `en`, `it`, `sl` | `en` | Language of the widget's own labels only. The assistant always answers in the language the visitor writes in. |
+| `position` | `left`, `right` | `right` | Bottom corner for the button and the panel. |
+| `accent` | hex colour `#rgb` to `#rrggbbaa`, URL-encoded (`%23f17023`) | `#3b5bdb` | Header, send button, visitor bubbles and link colour. Malformed values are ignored. |
+
+### 2. Per-site CSS: `widget_styles/<client_id>.css`
+
+For anything beyond a colour and a corner, add a stylesheet named exactly
+after the `client_id` (letters, digits, `-`, `_`). The widget links
+`GET /widget.css?client_id=<client_id>` right after its own base styles, so
+plain rules win the cascade without `!important`. A site without a file gets
+an empty stylesheet and the default look.
+
+Every element the widget creates carries the `chathelper-` prefix, so host
+page styles never collide with it:
+
+| Hook | What it is |
+|---|---|
+| `#chathelper-toggle` | the floating round button |
+| `#chathelper-panel` | the chat window (`.open` while visible) |
+| `.chathelper-hdr` | panel header; the `<small>` inside is the subtitle |
+| `.chathelper-msgs` | scrolling message area |
+| `.chathelper-msg.user` / `.chathelper-msg.bot` | one message row; `.chathelper-bubble` inside is the bubble |
+| `.chathelper-sources` | the "Sources: [1] [2]" line under an answer |
+| `.chathelper-composer` | the input row (`input` and `button` inside) |
+
+The base stylesheet defines these custom properties on `:root`; reassigning
+them is usually enough:
+
+| Variable | Default | Used for |
+|---|---|---|
+| `--chathelper-accent` | `#3b5bdb` | header, buttons, visitor bubbles, links |
+| `--chathelper-bg` | `#fff` | panel background |
+| `--chathelper-fg` | `#1a1a2e` | text colour |
+| `--chathelper-muted` | `#6b7280` | sources line |
+| `--chathelper-panel` | `#f7f8fa` | message-area background |
+
+Example, the file shipped for one site:
+
+```css
+/* widget_styles/ricambiribi.css */
+:root { --chathelper-accent: #d4321c; }
+#chathelper-panel { border-radius: 4px; }
+#chathelper-toggle { background-image: url(https://ricambiribi.com/wp-content/uploads/logo-icon.png);
+                     background-size: 60%; background-repeat: no-repeat; background-position: center; }
+```
+
+### 3. Per-site texts: `widget_strings/<client_id>.json`
+
+Any subset of five keys, merged over the `language` defaults. Keys you leave
+out keep the default for that language. Served at
+`GET /widget-strings.json?client_id=<client_id>` and applied as plain text,
+never as HTML.
+
+```json
+{
+  "title": "Ricambi Ribi",
+  "subtitle": "Chiedi dei ricambi per il tuo mezzo",
+  "placeholder": "Scrivi qui la tua domanda...",
+  "send": "Invia",
+  "unreachable": "Assistente non raggiungibile al momento."
+}
+```
+
+`title` and `subtitle` are the header, `placeholder` the empty input,
+`send` the button, `unreachable` the message shown when the backend cannot be
+reached. These change labels only; the answers are governed by the next point.
+
+### 4. Name and tone of the answers (`.env`)
+
+`SITE_NAMES=ricambiribi=Ricambi Ribi,adr=Adrlandia` tells the assistant whose
+site it speaks for (it says "we", never "their website"). `SITE_STYLES`
+appends a free-text tone instruction per site, entries separated by `|`
+because the text itself may contain commas:
+
+```dotenv
+SITE_STYLES=ricambiribi=Tono diretto e professionale, senza emoji.|adr=Tono cordiale, puoi usare qualche emoji.
+```
+
+Both live in the server's `.env` (`/srv/chathelper/app/.env` on the native
+install, `.env.production` for Compose) and need `systemctl restart chathelper`
+(or `deploy.sh restart`) to apply.
+
+### How changes reach visitors
+
+CSS and JSON files are read on every request, so on the native server they
+apply as soon as they are in `/srv/chathelper/app/widget_styles` or
+`widget_strings`, normally via commit, push and `git pull`; no restart. Browsers
+cache them for 60 seconds and `widget.js` itself for 5 minutes. Check a file is
+being served with:
+
+```bash
+curl -s "https://srv.tallweb.eu/widget.css?client_id=ricambiribi"
+curl -s "https://srv.tallweb.eu/widget-strings.json?client_id=ricambiribi"
+```
+
+If a site's own optimizer rewrites or defers scripts (LiteSpeed Cache, WP
+Rocket, Autoptimize), exclude `srv.tallweb.eu` from its JavaScript
+optimization, or embed a plain tag instead of the wrapper:
+
+```html
+<script async data-no-optimize="1" src="https://srv.tallweb.eu/widget.js?client_id=alemo&language=it"></script>
+```
 
 ## PostgreSQL and QA review
 

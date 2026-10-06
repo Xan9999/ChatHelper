@@ -27,4 +27,4 @@ properties (`--chathelper-accent`, `--chathelper-bg`, `--chathelper-fg`, `--chat
 
 For a one-line color/position tweak with no file at all, the `accent` and
 `position` query params on the widget.js snippet itself are simpler — see
-README "Embedding the widget". This directory is for anything beyond that.
+README "Customizing the widget". This directory is for anything beyond that.
