@@ -70,8 +70,12 @@ condiviso con terzi senza il vostro controllo.
 Il visitatore clicca sul pulsante della chat, scrive una domanda in linguaggio
 naturale (come se scrivesse a una persona) e riceve una risposta in pochi
 secondi, scritta progressivamente (come se qualcuno la stesse digitando in
-diretta). Se la risposta si basa sui contenuti del sito, accanto compaiono dei
-riferimenti numerati che rimandano alle pagine di origine.
+diretta). Quando una pagina del sito risponde direttamente alla domanda,
+l'assistente la collega con un link cliccabile. I riferimenti numerati alle
+pagine di origine ("Fonti: [1] [2]") sono nascosti ai visitatori e servono
+solo a chi gestisce il servizio per verificare le risposte: si attivano
+aggiungendo `&sources=1` allo snippet, oppure solo nel proprio browser
+eseguendo nella console `localStorage.setItem("chathelper.sources", "1")`.
 
 ## 4. Come inserirlo sul vostro sito
 

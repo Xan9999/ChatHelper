@@ -197,6 +197,14 @@ works just as well.
 | `language` | `en`, `it`, `sl` | `en` | Language of the widget's own labels only. The assistant always answers in the language the visitor writes in. |
 | `position` | `left`, `right` | `right` | Bottom corner for the button and the panel. |
 | `accent` | hex colour `#rgb` to `#rrggbbaa`, URL-encoded (`%23f17023`) | `#3b5bdb` | Header, send button, visitor bubbles and link colour. Malformed values are ignored. |
+| `sources` | `1` | off | Shows the "Sources: [1] [2]" links under each answer. A testing aid, hidden for visitors. |
+
+To inspect sources on a live client site without touching its snippet, open
+the browser console on that site and run
+`localStorage.setItem("chathelper.sources", "1")`; reload, and the links
+appear for that browser only. `"0"` forces them off even if the snippet has
+`sources=1`; `localStorage.removeItem("chathelper.sources")` returns to the
+snippet's setting.
 
 ### 2. Per-site CSS: `widget_styles/<client_id>.css`
 

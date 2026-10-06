@@ -24,6 +24,9 @@
  *              back to the default blue if missing or malformed.
  *   position — "left" or "right" (default "right"): which bottom corner the
  *              toggle button and panel open from.
+ *   sources  — "1" shows the "Sources: [1] [2]" links under each answer
+ *              (testing aid; hidden by default). Testers can also flip it per
+ *              browser via localStorage "chathelper.sources" = "1" / "0".
  *
  * For anything beyond a color and a corner (fonts, spacing, animations, a
  * logo, dark mode...), drop a full CSS file at
@@ -49,6 +52,17 @@
   var ACCENT = scriptUrl.searchParams.get("accent") || "";
   if (ACCENT && !/^#[0-9a-fA-F]{3,8}$/.test(ACCENT)) ACCENT = ""; // malformed -> keep default
   var SIDE = (scriptUrl.searchParams.get("position") || "right").toLowerCase() === "left" ? "left" : "right";
+  // The "Sources: [1] [2]" line under answers is for testing, not visitors.
+  // Hidden by default. Enable per site with &sources=1 on the script URL, or
+  // per browser (no snippet change) from the console on the client's site:
+  //   localStorage.setItem("chathelper.sources", "1")   // "0" forces off
+  // The browser setting wins over the snippet; remove it with removeItem.
+  var SHOW_SOURCES = (function () {
+    var pref = null;
+    try { pref = window.localStorage.getItem("chathelper.sources"); } catch (_) {}
+    if (pref === "1" || pref === "0") return pref === "1";
+    return scriptUrl.searchParams.get("sources") === "1";
+  })();
 
   var STRINGS = {
     en: { title: "Assistant", subtitle: "Ask about this site", placeholder: "Type your question...",
@@ -210,6 +224,7 @@
   }
 
   function renderSources(bubble, sources) {
+    if (!SHOW_SOURCES) return;
     var valid = (sources || []).filter(function (s) {
       if (!s || typeof s.url !== "string") return false;
       try {
